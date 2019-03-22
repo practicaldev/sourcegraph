@@ -248,7 +248,7 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                 id: 'setURL',
                 label: 'Set Bitbucket Server URL',
                 run: config => {
-                    const value = '<Bitbucket Server URL>'
+                    const value = 'https://bitbucket.example.com'
                     const edits = setProperty(config, ['url'], value, defaultFormattingOptions)
                     return { edits, selectText: value }
                 },
@@ -257,7 +257,7 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                 id: 'setPersonalAccessToken',
                 label: 'Set personal access token',
                 run: config => {
-                    const value = '<Personal access token>'
+                    const value = '<Bitbucket Server personal access token>'
                     const edits = setProperty(config, ['token'], value, defaultFormattingOptions)
                     return { edits, selectText: value }
                 },
@@ -266,7 +266,7 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                 id: 'setSelfSignedCert',
                 label: 'Set internal or self-signed certificate',
                 run: config => {
-                    const value = '<Internal-CA- or self-signed certificate>'
+                    const value = '<internal-CA- or self-signed certificate>'
                     const edits = setProperty(config, ['certificate'], value, defaultFormattingOptions)
                     return { edits, selectText: value }
                 },
@@ -296,7 +296,7 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                 id: 'setURL',
                 label: 'Set GitLab URL',
                 run: config => {
-                    const value = '<GitLab instance URL>'
+                    const value = 'https://gitlab.example.com'
                     const edits = setProperty(config, ['url'], value, defaultFormattingOptions)
                     return { edits, selectText: value }
                 },
@@ -305,7 +305,7 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                 id: 'setPersonalAccessToken',
                 label: 'Set personal access token',
                 run: config => {
-                    const value = '<Personal access token>'
+                    const value = '<GitLab personal access token>'
                     const edits = setProperty(config, ['token'], value, defaultFormattingOptions)
                     return { edits, selectText: value }
                 },
@@ -314,7 +314,7 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                 id: 'setSelfSignedCert',
                 label: 'Set internal or self-signed certificate',
                 run: config => {
-                    const value = '<Internal-CA- or self-signed certificate>'
+                    const value = '<internal-CA- or self-signed certificate>'
                     const edits = setProperty(config, ['certificate'], value, defaultFormattingOptions)
                     return { edits, selectText: value }
                 },
@@ -353,10 +353,10 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                     edits: setProperty(
                         config,
                         ['projectQuery', -1],
-                        '?search=<Search query>',
+                        '?search=<search query>',
                         defaultFormattingOptions
                     ),
-                    selectText: '<Search query>',
+                    selectText: '<search query>',
                 }),
             },
             {
