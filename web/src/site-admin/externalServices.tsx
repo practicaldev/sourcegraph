@@ -406,6 +406,26 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
   "prefix": "gitolite.example.com/",
   "host": "git@gitolite.example.com"
 }`,
+        editorActions: [
+            {
+                id: 'setPrefix',
+                label: 'Set prefix',
+                run: config => {
+                    const value = 'gitolite.example.com/'
+                    const edits = setProperty(config, ['prefix'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'setHost',
+                label: 'Set host',
+                run: config => {
+                    const value = 'git@gitolite.example.com'
+                    const edits = setProperty(config, ['host'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+        ],
     },
     [GQL.ExternalServiceKind.PHABRICATOR]: {
         title: 'Phabricator connection',
@@ -423,6 +443,38 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
   "token": "",
   "repos": []
 }`,
+        editorActions: [
+            {
+                id: 'setPhabricatorURL',
+                label: 'Set Phabricator URL',
+                run: config => {
+                    const value = 'https://phabricator.example.com'
+                    const edits = setProperty(config, ['url'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'setAccessToken',
+                label: 'Set Phabricator access token',
+                run: config => {
+                    const value = '<Phabricator access token>'
+                    const edits = setProperty(config, ['token'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'addRepository',
+                label: 'Add repository',
+                run: config => {
+                    const value = {
+                        callsign: '<Phabricator repository callsign>',
+                        path: '<Sourcegraph repository full name>',
+                    }
+                    const edits = setProperty(config, ['repos', -1], value, defaultFormattingOptions)
+                    return { edits, selectText: '<Phabricator repository callsign>' }
+                },
+            },
+        ],
     },
     [GQL.ExternalServiceKind.OTHER]: {
         title: 'Single Git repositories',
