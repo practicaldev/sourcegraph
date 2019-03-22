@@ -347,6 +347,24 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                 },
             },
             {
+                id: 'syncGroupProjects',
+                label: 'Sync group projects',
+                run: config => {
+                    const value = 'groups/<group ID>/projects'
+                    const edits = setProperty(config, ['projectQuery', -1], value, defaultFormattingOptions)
+                    return { edits, selectText: '<group ID>' }
+                },
+            },
+            {
+                id: 'syncMembershipProjects',
+                label: 'Sync all projects the access token user is a member of',
+                run: config => {
+                    const value = '?membership=true'
+                    const edits = setProperty(config, ['projectQuery', -1], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
                 id: 'syncProjectsMatchingSearch',
                 label: 'Sync projects matching search',
                 run: config => ({
