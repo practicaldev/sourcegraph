@@ -178,6 +178,35 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
   "accessKeyID": "",
   "secretAccessKey": ""
 }`,
+        editorActions: [
+            {
+                id: 'setRegion',
+                label: 'Set AWS region',
+                run: config => {
+                    const value = '<AWS region>'
+                    const edits = setProperty(config, ['region'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'setAccessKeyID',
+                label: 'Set access key ID',
+                run: config => {
+                    const value = '<AWS access key ID>'
+                    const edits = setProperty(config, ['accessKeyID'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'setSecretAccessKey',
+                label: 'Set AWS secret access key',
+                run: config => {
+                    const value = '<AWS secret access key>'
+                    const edits = setProperty(config, ['secretAccessKey'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+        ],
     },
     [GQL.ExternalServiceKind.BITBUCKETSERVER]: {
         title: 'Bitbucket Server repositories',
