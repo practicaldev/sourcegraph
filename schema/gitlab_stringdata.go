@@ -41,7 +41,7 @@ const GitLabSchemaJSON = `{
       "examples": ["-----BEGIN CERTIFICATE-----\n..."]
     },
     "projectQuery": {
-      "description": "An array of strings specifying which GitLab projects to mirror on Sourcegraph. Each string is a URL query string for the GitLab projects API, such as \"?membership=true&search=foo\".\n\nThe query string is passed directly to GitLab to retrieve the list of projects. The special string \"none\" can be used as the only element to disable this feature. Projects matched by multiple query strings are only imported once. See https://docs.gitlab.com/ee/api/projects.html#list-all-projects for available query string options.",
+      "description": "An array of strings specifying which GitLab projects to mirror on Sourcegraph. Each string is a URL path and query that targets a GitLab API endpoint returning a list of projects. If the string only contains a query, then \"projects\" is used as the path. Examples: \"?membership=true&search=foo\", \"groups/mygroup/projects\".\n\nThe special string \"none\" can be used as the only element to disable this feature. Projects matched by multiple query strings are only imported once. Here are a few endpoints that return a list of projects: https://docs.gitlab.com/ee/api/projects.html#list-all-projects, https://docs.gitlab.com/ee/api/groups.html#list-a-groups-projects, https://docs.gitlab.com/ee/api/search.html#scope-projects.",
       "type": "array",
       "default": ["?membership=true"],
       "items": {
