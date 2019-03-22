@@ -1,4 +1,4 @@
-import { FormattingOptions } from '@sqs/jsonc-parser'
+import { Edit, FormattingOptions, JSONPath } from '@sqs/jsonc-parser'
 import { setProperty } from '@sqs/jsonc-parser/lib/edit'
 import { flatMap, map } from 'lodash'
 import AmazonIcon from 'mdi-react/AmazonIcon'
@@ -77,50 +77,67 @@ const defaultFormattingOptions: FormattingOptions = {
     tabSize: 2,
 }
 
-const githubEditorActions: EditorAction[] = [
-    {
-        id: 'setAccessToken',
-        label: 'Set access token',
-        run: config => {
-            const value = '<GitHub personal access token>'
-            const edits = setProperty(config, ['token'], value, defaultFormattingOptions)
-            return { edits, selectText: '<GitHub personal access token>' }
-        },
-    },
-    {
-        id: 'addOrgRepo',
-        label: 'Add organization repositories',
-        run: config => {
-            const value = 'org:<organization name>'
-            const edits = setProperty(config, ['repositoryQuery', -1], value, defaultFormattingOptions)
-            return { edits, selectText: '<organization name>' }
-        },
-    },
-    {
-        id: 'addSingleRepo',
-        label: 'Add single repository',
-        run: config => {
-            const value = '<GitHub owner>/<GitHub repository name>'
-            const edits = setProperty(config, ['repos', -1], value, defaultFormattingOptions)
-            return { edits, selectText: '<GitHub owner>/<GitHub repository name>' }
-        },
-    },
-    {
-        id: 'addSearchQueryRepos',
-        label: 'Add repositories matching search query',
-        run: config => {
-            const value = '<GitHub search query>'
-            const edits = setProperty(config, ['repositoryQuery', -1], value, defaultFormattingOptions)
-            return { edits, selectText: '<GitHub search query>' }
-        },
-    },
-]
+function editWithComment(config: string, path: JSONPath, value: any, comment: string): Edit {
+    const edit = setProperty(config, path, value, defaultFormattingOptions)[0]
+    edit.content = edit.content.replace('"SENTINEL": true', comment)
+    return edit
+}
 
 export const GITHUB_EXTERNAL_SERVICE: ExternalServiceKindMetadata = {
     title: 'GitHub repositories',
     icon: <GithubCircleIcon size={ICON_SIZE} />,
     jsonSchema: githubSchemaJSON,
-    editorActions: githubEditorActions,
+    editorActions: [
+        {
+            id: 'setAccessToken',
+            label: 'Set access token',
+            run: config => {
+                const value = '<GitHub personal access token>'
+                const edits = setProperty(config, ['token'], value, defaultFormattingOptions)
+                return { edits, selectText: '<GitHub personal access token>' }
+            },
+        },
+        {
+            id: 'addOrgRepo',
+            label: 'Add organization repositories',
+            run: config => {
+                const value = 'org:<organization name>'
+                const edits = setProperty(config, ['repositoryQuery', -1], value, defaultFormattingOptions)
+                return { edits, selectText: '<organization name>' }
+            },
+        },
+        {
+            id: 'addSingleRepo',
+            label: 'Add single repository',
+            run: config => {
+                const value = '<GitHub owner>/<GitHub repository name>'
+                const edits = setProperty(config, ['repos', -1], value, defaultFormattingOptions)
+                return { edits, selectText: '<GitHub owner>/<GitHub repository name>' }
+            },
+        },
+        {
+            id: 'addSearchQueryRepos',
+            label: 'Add repositories matching search query',
+            run: config => {
+                const value = '<GitHub search query>'
+                const edits = setProperty(config, ['repositoryQuery', -1], value, defaultFormattingOptions)
+                return { edits, selectText: '<GitHub search query>' }
+            },
+        },
+        {
+            id: 'enablePermissions',
+            label: 'Enforce permissions',
+            run: config => {
+                const value = {
+                    SENTINEL: true,
+                }
+                const comment =
+                    '// Prerequisite: you must configure GitHub as an OAuth auth provider in the critical site config (https://docs.sourcegraph.com/admin/auth#github). Otherwise, access to all repositories will be disallowed.'
+                const edit = editWithComment(config, ['authorization'], value, comment)
+                return { edits: [edit], selectText: comment }
+            },
+        },
+    ],
     iconBrandColor: 'github',
     shortDescription: 'Add GitHub repositories.',
     longDescription: (
@@ -352,11 +369,10 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                             type: 'oauth',
                         },
                     }
-                    const edit = setProperty(config, ['authorization'], value, defaultFormattingOptions)[0]
                     const comment = `// Prerequisite: you must first update the critical site configuration to
       // include GitLab OAuth as an auth provider.
       // See https://docs.sourcegraph.com/admin/auth#gitlab for instructions.`
-                    edit.content = edit.content.replace('"SENTINEL": true,', comment)
+                    const edit = editWithComment(config, ['authorization'], value, comment)
                     return { edits: [edit], selectText: comment }
                 },
             },
@@ -374,7 +390,6 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
                                 '<name that identifies the auth provider to GitLab (hover over "gitlabProvider" for docs)>',
                         },
                     }
-                    const edit = setProperty(config, ['authorization'], value, defaultFormattingOptions)[0]
                     const comment = `// Prerequisite: You will need a sudo-level access token. If you can configure
     // GitLab as an OAuth identity provider for Sourcegraph, we recommend that
     // option instead.
@@ -385,7 +400,7 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
     //    include the SSO auth provider for GitLab (https://docs.sourcegraph.com/admin/auth).
     // 3. Update the fields below to match the properties of this auth provider
     //    (https://docs.sourcegraph.com/admin/repo/permissions#sudo-access-token).`
-                    edit.content = edit.content.replace('"SENTINEL": true,', comment)
+                    const edit = editWithComment(config, ['authorization'], value, comment)
                     return { edits: [edit], selectText: comment }
                 },
             },
@@ -494,6 +509,26 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
   // Repository clone paths may be relative to the url (preferred) or absolute.
   "repos": []
 }`,
+        editorActions: [
+            {
+                id: 'setURL',
+                label: 'Set Git host URL',
+                run: config => {
+                    const value = 'https://my-other-githost.example.com'
+                    const edits = setProperty(config, ['url'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'addRepo',
+                label: 'Add repository',
+                run: config => {
+                    const value = 'path/to/repository'
+                    const edits = setProperty(config, ['repos', -1], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+        ],
     },
 }
 
@@ -524,8 +559,7 @@ const externalServiceAddVariants: Partial<
         dotcom: {
             title: 'GitHub.com repositories',
             shortDescription: 'Add GitHub.com repositories.',
-            editorActions: [
-                ...githubEditorActions,
+            editorActions: (GITHUB_EXTERNAL_SERVICE.editorActions || []).concat([
                 {
                     id: 'addPublicRepo',
                     label: 'Add public repository',
@@ -535,7 +569,7 @@ const externalServiceAddVariants: Partial<
                         return { edits, selectText: '<GitHub owner>/<GitHub repository name>' }
                     },
                 },
-            ],
+            ]),
         },
         enterprise: {
             title: 'GitHub Enterprise repositories',
