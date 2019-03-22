@@ -283,18 +283,6 @@ func (c *gitlabConnection) listAllProjects(ctx context.Context) <-chan *gitlab.P
 		configProjectQuery = []string{"?membership=true"}
 	}
 
-	normalizeQuery := func(projectQuery string) (url.Values, error) {
-		q, err := url.ParseQuery(strings.TrimPrefix(projectQuery, "?"))
-		if err != nil {
-			return nil, err
-		}
-		if q.Get("order_by") == "" && q.Get("sort") == "" {
-			// Apply default ordering to get the likely more relevant projects first.
-			q.Set("order_by", "last_activity_at")
-		}
-		return q, nil
-	}
-
 	const perPage = 100 // max GitLab API per_page parameter
 	ch := make(chan *gitlab.Project, perPage)
 	go func() {
@@ -303,14 +291,13 @@ func (c *gitlabConnection) listAllProjects(ctx context.Context) <-chan *gitlab.P
 			if projectQuery == "none" {
 				continue
 			}
-			q, err := normalizeQuery(projectQuery)
+
+			url, err := projectQueryToURL(projectQuery, perPage)
 			if err != nil {
 				log15.Error("Skipping invalid GitLab projectQuery", "projectQuery", projectQuery, "error", err)
 				continue
 			}
-			q.Set("per_page", strconv.Itoa(perPage))
 
-			url := "projects?" + q.Encode() // first page URL
 			for {
 				projects, nextPageURL, err := c.client.ListProjects(ctx, url)
 				if err != nil {
@@ -330,4 +317,36 @@ func (c *gitlabConnection) listAllProjects(ctx context.Context) <-chan *gitlab.P
 	}()
 
 	return ch
+}
+
+var schemeOrHostNotEmptyErr = errors.New("scheme and host should be empty")
+
+func projectQueryToURL(projectQuery string, perPage int) (string, error) {
+	// If all we have is the URL query, prepend "projects"
+	if strings.HasPrefix(projectQuery, "?") {
+		projectQuery = "projects" + projectQuery
+	} else if projectQuery == "" {
+		projectQuery = "projects"
+	}
+
+	u, err := url.Parse(projectQuery)
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme != "" || u.Host != "" {
+		return "", schemeOrHostNotEmptyErr
+	}
+	normalizeQuery(u, perPage)
+
+	return u.String(), nil
+}
+
+func normalizeQuery(u *url.URL, perPage int) {
+	q := u.Query()
+	if q.Get("order_by") == "" && q.Get("sort") == "" {
+		// Apply default ordering to get the likely more relevant projects first.
+		q.Set("order_by", "last_activity_at")
+	}
+	q.Set("per_page", strconv.Itoa(perPage))
+	u.RawQuery = q.Encode()
 }
