@@ -216,6 +216,122 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
   // https://[your-gitlab-hostname]/profile/personal_access_tokens
   "token": ""
 }`,
+        editorActions: [
+            {
+                id: 'setInstanceURL',
+                label: 'Set instance URL',
+                run: config => {
+                    const value = '<GitLab instance URL>'
+                    const edits = setProperty(config, ['url'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'setPersonalAccessToken',
+                label: 'Set personal access token',
+                run: config => {
+                    const value = '<Personal access token>'
+                    const edits = setProperty(config, ['token'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'setSelfSignedCert',
+                label: 'Set internal or self-signed certificate',
+                run: config => {
+                    const value = '<Internal-CA- or self-signed certificate>'
+                    const edits = setProperty(config, ['certificate'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'syncInternalProjects',
+                label: 'Sync internal projects',
+                run: config => {
+                    const value = '?visibility=internal'
+                    const edits = setProperty(config, ['projectQuery', -1], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'syncPrivateProjects',
+                label: 'Sync private projects',
+                run: config => {
+                    const value = '?visibility=private'
+                    const edits = setProperty(config, ['projectQuery', -1], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'syncPublicProjects',
+                label: 'Sync public projects',
+                run: config => {
+                    const value = '?visibility=public'
+                    const edits = setProperty(config, ['projectQuery', -1], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'syncProjectsMatchingSearch',
+                label: 'Sync projects matching search',
+                run: config => ({
+                    edits: setProperty(
+                        config,
+                        ['projectQuery', -1],
+                        '?search=<Search query>',
+                        defaultFormattingOptions
+                    ),
+                    selectText: '<Search query>',
+                }),
+            },
+            {
+                id: 'enforcePermissionsOAuth',
+                label: 'Enforce permissions (OAuth)',
+                run: config => {
+                    const value = {
+                        identityProvider: {
+                            SENTINEL: true,
+                            type: 'oauth',
+                        },
+                    }
+                    const edit = setProperty(config, ['authorization'], value, defaultFormattingOptions)[0]
+                    const comment = `// Prerequisite: you must first update the critical site configuration to
+      // include GitLab OAuth as an auth provider.
+      // See https://docs.sourcegraph.com/admin/auth#gitlab for instructions.`
+                    edit.content = edit.content.replace('"SENTINEL": true,', comment)
+                    return { edits: [edit], selectText: comment }
+                },
+            },
+            {
+                id: 'enforcePermissionsSSO',
+                label: 'Enforce permissions (SSO)',
+                run: config => {
+                    const value = {
+                        SENTINEL: true,
+                        identityProvider: {
+                            type: 'external',
+                            authProviderID: '<configID field of the auth provider>',
+                            authProviderType: '<type field of the auth provider>',
+                            gitlabProvider:
+                                '<name that identifies the auth provider to GitLab (hover over "gitlabProvider" for docs)>',
+                        },
+                    }
+                    const edit = setProperty(config, ['authorization'], value, defaultFormattingOptions)[0]
+                    const comment = `// Prerequisite: You will need a sudo-level access token. If you can configure
+    // GitLab as an OAuth identity provider for Sourcegraph, we recommend that
+    // option instead.
+    //
+    // 1. Ensure the personal access token in this config has admin privileges
+    //    (https://docs.gitlab.com/ee/api/#sudo).
+    // 2. Update the critical site configuration in the management console to
+    //    include the SSO auth provider for GitLab (https://docs.sourcegraph.com/admin/auth).
+    // 3. Update the fields below to match the properties of this auth provider
+    //    (https://docs.sourcegraph.com/admin/repo/permissions#sudo-access-token).`
+                    edit.content = edit.content.replace('"SENTINEL": true,', comment)
+                    return { edits: [edit], selectText: comment }
+                },
+            },
+        ],
     },
     [GQL.ExternalServiceKind.GITOLITE]: {
         title: 'Gitolite repositories',
