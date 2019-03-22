@@ -197,6 +197,35 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
   // https://[your-bitbucket-hostname]/plugins/servlet/access-tokens/add
   "token": ""
 }`,
+        editorActions: [
+            {
+                id: 'setURL',
+                label: 'Set Bitbucket Server URL',
+                run: config => {
+                    const value = '<Bitbucket Server URL>'
+                    const edits = setProperty(config, ['url'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'setPersonalAccessToken',
+                label: 'Set personal access token',
+                run: config => {
+                    const value = '<Personal access token>'
+                    const edits = setProperty(config, ['token'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+            {
+                id: 'setSelfSignedCert',
+                label: 'Set internal or self-signed certificate',
+                run: config => {
+                    const value = '<Internal-CA- or self-signed certificate>'
+                    const edits = setProperty(config, ['certificate'], value, defaultFormattingOptions)
+                    return { edits, selectText: value }
+                },
+            },
+        ],
     },
     [GQL.ExternalServiceKind.GITLAB]: {
         title: 'GitLab projects',
@@ -218,8 +247,8 @@ export const ALL_EXTERNAL_SERVICES: Record<GQL.ExternalServiceKind, ExternalServ
 }`,
         editorActions: [
             {
-                id: 'setInstanceURL',
-                label: 'Set instance URL',
+                id: 'setURL',
+                label: 'Set GitLab URL',
                 run: config => {
                     const value = '<GitLab instance URL>'
                     const edits = setProperty(config, ['url'], value, defaultFormattingOptions)
