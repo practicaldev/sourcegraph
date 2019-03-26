@@ -72,7 +72,7 @@ require (
 	github.com/k0kubun/colorstring v0.0.0-20150214042306-9440f1994b88 // indirect
 	github.com/k0kubun/pp v2.3.0+incompatible
 	github.com/kardianos/osext v0.0.0-20170510131534-ae77be60afb1
-	github.com/karrick/tparse v2.4.2+incompatible
+	github.com/karrick/tparse v2.6.1+incompatible
 	github.com/keegancsmith/rpc v1.1.0
 	github.com/keegancsmith/sqlf v1.1.0
 	github.com/keegancsmith/tmpfriend v0.0.0-20180423180255-86e88902a513
