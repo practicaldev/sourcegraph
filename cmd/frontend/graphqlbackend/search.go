@@ -541,7 +541,7 @@ func (r *searchResolver) suggestFilePaths(ctx context.Context, limit int) ([]*se
 		return nil, err
 	}
 
-	fileResults, _, err := searchFilesInRepos(ctx, &args)
+	fileResults, _, err := searchFilesInRepos(ctx, &args, r.maxResults())
 	if err != nil {
 		return nil, err
 	}
@@ -549,7 +549,7 @@ func (r *searchResolver) suggestFilePaths(ctx context.Context, limit int) ([]*se
 	var suggestions []*searchSuggestionResolver
 	for i, result := range fileResults {
 		assumedScore := len(fileResults) - i // Greater score is first, so we inverse the index.
-		suggestions = append(suggestions, newSearchResultResolver(result.File(), assumedScore))
+		suggestions = append(suggestions, newSearchResultResolver(result.fileMatch.File(), assumedScore))
 	}
 	return suggestions, nil
 }
