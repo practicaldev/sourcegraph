@@ -174,7 +174,7 @@ func TestGithubSource_ListRepos(t *testing.T) {
 			defer save(t, rec)
 
 			mw := httpcli.NewMiddleware(
-				redirect(map[string]string{"github-proxy": "api.github.com"}),
+				githubProxyRedirectMiddleware,
 				auth(os.Getenv("GITHUB_ACCESS_TOKEN")),
 			)
 
@@ -203,15 +203,14 @@ func TestGithubSource_ListRepos(t *testing.T) {
 	}
 }
 
-func redirect(rules map[string]string) httpcli.Middleware {
-	return func(cli httpcli.Doer) httpcli.Doer {
-		return httpcli.DoerFunc(func(req *http.Request) (*http.Response, error) {
-			if host, ok := rules[req.URL.Hostname()]; ok {
-				req.URL.Host = host
-			}
-			return cli.Do(req)
-		})
-	}
+func githubProxyRedirectMiddleware(cli httpcli.Doer) httpcli.Doer {
+	return httpcli.DoerFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Hostname() == "github-proxy" {
+			req.URL.Host = "api.github.com"
+			req.URL.Scheme = "https"
+		}
+		return cli.Do(req)
+	})
 }
 
 func auth(token string) httpcli.Middleware {
