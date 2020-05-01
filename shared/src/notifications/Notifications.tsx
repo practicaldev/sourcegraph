@@ -6,9 +6,9 @@ import { NotificationType } from '../api/client/services/notifications'
 import { ExtensionsControllerProps } from '../extensions/controller'
 import { asError } from '../util/errors'
 import { Notification } from './notification'
-import { NotificationItem } from './NotificationItem'
+import { NotificationItem, NotificationClassNameProps } from './NotificationItem'
 
-interface Props extends ExtensionsControllerProps {}
+interface Props extends ExtensionsControllerProps, NotificationClassNameProps {}
 
 interface State {
     notifications: (Notification & { id: string })[]
@@ -46,6 +46,7 @@ export class Notifications extends React.PureComponent<Props, State> {
                                     takeWhile(({ percentage }) => !percentage || percentage < 100),
                                     delay(1000)
                                 )
+                                // eslint-disable-next-line rxjs/no-nested-subscribe
                                 .subscribe({
                                     error: err => {
                                         this.setState(({ notifications }) => ({
@@ -85,13 +86,14 @@ export class Notifications extends React.PureComponent<Props, State> {
                         notification={notification}
                         onDismiss={this.onDismiss}
                         className="sourcegraph-notifications__notification m-2"
+                        notificationClassNames={this.props.notificationClassNames}
                     />
                 ))}
             </div>
         )
     }
 
-    private onDismiss = (notification: Notification) => {
+    private onDismiss = (notification: Notification): void => {
         this.setState(prevState => ({ notifications: prevState.notifications.filter(n => n !== notification) }))
     }
 }

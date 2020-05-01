@@ -4,6 +4,7 @@ import { LinkOrSpan } from '../../../shared/src/components/LinkOrSpan'
 import * as GQL from '../../../shared/src/graphql/schema'
 import { highlightNode } from '../../../shared/src/util/dom'
 import { HighlightRange } from './SearchResult'
+
 interface Props {
     /**
      * A CSS class name to add to this component's element.
@@ -63,17 +64,15 @@ export class DecoratedTextLines extends React.PureComponent<Props, State> {
         this.updateHighlights()
     }
 
-    public componentWillReceiveProps(nextProps: Props): void {
+    public componentDidUpdate(prevProps: Props): void {
         if (
-            this.props.value !== nextProps.value ||
-            this.props.highlights !== nextProps.highlights ||
-            this.props.lineClasses !== nextProps.lineClasses
+            this.props.value !== prevProps.value ||
+            this.props.highlights !== prevProps.highlights ||
+            this.props.lineClasses !== prevProps.lineClasses
         ) {
-            this.setState(this.getStateForProps(nextProps))
+            // eslint-disable-next-line react/no-did-update-set-state
+            this.setState(this.getStateForProps(this.props))
         }
-    }
-
-    public componentDidUpdate(prevProps: Props, prevState: State): void {
         this.updateHighlights()
     }
 
@@ -142,11 +141,11 @@ export class DecoratedTextLines extends React.PureComponent<Props, State> {
         )
     }
 
-    public onChangeVisibility = (isVisible: boolean): void => {
+    public onChangeVisibility = (): void => {
         this.setState({ visible: true })
     }
 
-    private setTableContainerElement = (ref: HTMLElement | null) => {
+    private setTableContainerElement = (ref: HTMLElement | null): void => {
         this.tableContainerElement = ref
     }
 }

@@ -12,7 +12,7 @@ Install [Node.js](https://nodejs.org) to build and package your extension.
 
 ## Sourcegraph.com account and the Sourcegraph CLI
 
-Publishing an extension requires a [Sourcegraph.com account](https://sourcegraph.com/sign-up). Sourcegraph Enterprise instances support a [private extension registry](https://docs.sourcegraph.com/extensions).
+Publishing an extension requires a [Sourcegraph.com account](https://sourcegraph.com/sign-up). Sourcegraph Enterprise Plus instances support a [private extension registry](https://docs.sourcegraph.com/extensions).
 
 Install the [Sourcegraph CLI (`src`)](https://github.com/sourcegraph/src-cli#installation), then [configure `src` with an access token](https://github.com/sourcegraph/src-cli#authentication).
 
@@ -22,5 +22,5 @@ Bring your extension's features for code viewed on GitHub, GitLab and other code
 
 ## Next steps
 
-[Creating a Sourcegraph extension](creating.md)
-[Local development](local_development.md)
+* [Creating a Sourcegraph extension](creating.md)
+* [Developing Sourcegraph extensions locally](local_development.md)

@@ -5,29 +5,45 @@ import * as React from 'react'
 import { from, Subject, Subscription } from 'rxjs'
 import { catchError, map, mapTo, mergeMap, startWith, tap } from 'rxjs/operators'
 import { ExecuteCommandParams } from '../api/client/services/command'
-import { EvaluatedActionContribution } from '../api/protocol'
+import { ActionContribution, Evaluated } from '../api/protocol'
 import { urlForOpenPanel } from '../commands/commands'
 import { LinkOrButton } from '../components/LinkOrButton'
 import { ExtensionsControllerProps } from '../extensions/controller'
 import { PlatformContextProps } from '../platform/context'
-import { TelemetryContext } from '../telemetry/telemetryContext'
-import { asError, ErrorLike, isErrorLike } from '../util/errors'
+import { TelemetryProps } from '../telemetry/telemetryService'
+import { asError, ErrorLike, isErrorLike, tryCatch } from '../util/errors'
+import OpenInNewIcon from 'mdi-react/OpenInNewIcon'
 
-export interface ActionItemProps {
+export interface ActionItemAction {
     /**
      * The action specified in the menu item's {@link module:sourcegraph.module/protocol.MenuItemContribution#action}
      * property.
      */
-    action: EvaluatedActionContribution
+    action: Evaluated<ActionContribution>
 
     /**
      * The alternative action specified in the menu item's
      * {@link module:sourcegraph.module/protocol.MenuItemContribution#alt} property.
      */
-    altAction?: EvaluatedActionContribution
+    altAction?: Evaluated<ActionContribution>
+}
 
+export interface ActionItemComponentProps
+    extends ExtensionsControllerProps<'executeCommand'>,
+        PlatformContextProps<'forceUpdateTooltip' | 'settings'> {
+    location: H.Location
+
+    iconClassName?: string
+}
+
+export interface ActionItemProps extends ActionItemAction, ActionItemComponentProps, TelemetryProps {
     variant?: 'actionItem'
+
     className?: string
+
+    /**
+     * Added _in addition_ to `className` if the action item is a toggle in the "pressed" state.
+     */
     pressedClassName?: string
 
     /** Called after executing the action (for both success and failure). */
@@ -58,29 +74,18 @@ export interface ActionItemProps {
     showInlineError?: boolean
 
     /** Instead of showing the icon and/or title, show this element. */
-    title?: React.ReactElement<any>
+    title?: JSX.Element | null
 }
 
-export interface ActionItemComponentProps
-    extends ExtensionsControllerProps<'executeCommand'>,
-        PlatformContextProps<'forceUpdateTooltip'> {
-    location: H.Location
-}
-
-interface Props extends ActionItemProps, ActionItemComponentProps {}
-
-const LOADING: 'loading' = 'loading'
+const LOADING = 'loading' as const
 
 interface State {
     /** The executed action: undefined while loading, null when done or not started, or an error. */
     actionOrError: typeof LOADING | null | ErrorLike
 }
 
-export class ActionItem extends React.PureComponent<Props, State> {
+export class ActionItem extends React.PureComponent<ActionItemProps, State> {
     public state: State = { actionOrError: null }
-
-    public static contextType = TelemetryContext
-    public context!: React.ContextType<typeof TelemetryContext>
 
     private commandExecutions = new Subject<ExecuteCommandParams>()
     private subscriptions = new Subscription()
@@ -103,11 +108,14 @@ export class ActionItem extends React.PureComponent<Props, State> {
                         )
                     )
                 )
-                .subscribe(stateUpdate => this.setState(stateUpdate), error => console.error(error))
+                .subscribe(
+                    stateUpdate => this.setState(stateUpdate),
+                    error => console.error(error)
+                )
         )
     }
 
-    public componentDidUpdate(prevProps: Props, prevState: State): void {
+    public componentDidUpdate(prevProps: ActionItemProps, prevState: State): void {
         // If the tooltip changes while it's visible, we need to force-update it to show the new value.
         const prevTooltip = prevProps.action.actionItem && prevProps.action.actionItem.description
         const tooltip = this.props.action.actionItem && this.props.action.actionItem.description
@@ -142,10 +150,9 @@ export class ActionItem extends React.PureComponent<Props, State> {
                         <img
                             src={this.props.action.actionItem.iconURL}
                             alt={this.props.action.actionItem.iconDescription}
-                            className="icon-inline"
+                            className={this.props.iconClassName}
                         />
-                    )}
-                    {this.props.action.actionItem.iconURL && this.props.action.actionItem.label && <>&nbsp;</>}
+                    )}{' '}
                     {this.props.action.actionItem.label}
                 </>
             )
@@ -153,10 +160,9 @@ export class ActionItem extends React.PureComponent<Props, State> {
         } else {
             content = (
                 <>
-                    {this.props.action.iconURL && <img src={this.props.action.iconURL} className="icon-inline" />}
-                    {this.props.action.iconURL && (this.props.action.category || this.props.action.title) && (
-                        <>&nbsp;</>
-                    )}
+                    {this.props.action.iconURL && (
+                        <img src={this.props.action.iconURL} className={this.props.iconClassName} />
+                    )}{' '}
                     {this.props.action.category ? `${this.props.action.category}: ` : ''}
                     {this.props.action.title}
                 </>
@@ -180,7 +186,16 @@ export class ActionItem extends React.PureComponent<Props, State> {
 
         const showLoadingSpinner = this.props.showLoadingSpinnerDuringExecution && this.state.actionOrError === LOADING
         const pressed =
-            this.props.variant === 'actionItem' && this.props.action.actionItem && this.props.action.actionItem.pressed
+            this.props.variant === 'actionItem' && this.props.action.actionItem
+                ? this.props.action.actionItem.pressed
+                : undefined
+
+        const altTo = this.props.altAction && urlForClientCommandOpen(this.props.altAction, this.props.location)
+        const to = urlForClientCommandOpen(this.props.action, this.props.location) || altTo
+
+        const isExternalLink = !!(
+            to && tryCatch(() => new URL(to, window.location.href).origin !== window.location.origin)
+        )
 
         return (
             <LinkOrButton
@@ -198,29 +213,28 @@ export class ActionItem extends React.PureComponent<Props, State> {
                     this.props.className,
                     showLoadingSpinner && 'action-item--loading',
                     variantClassName,
-                    pressed && [`action-item--pressed`, this.props.pressedClassName]
+                    pressed && ['action-item--pressed', this.props.pressedClassName]
                 )}
+                pressed={pressed}
+                onSelect={this.runAction}
                 // If the command is 'open' or 'openXyz' (builtin commands), render it as a link. Otherwise render
                 // it as a button that executes the command.
-                to={
-                    urlForClientCommandOpen(this.props.action, this.props.location) ||
-                    (this.props.altAction && urlForClientCommandOpen(this.props.altAction, this.props.location))
-                }
-                onSelect={this.runAction}
+                to={to}
+                // Open in new tab if an external link
+                target={isExternalLink ? '_blank' : undefined}
+                rel={isExternalLink ? 'noopener noreferrer' : undefined}
             >
-                {/* Use custom CSS classes instead of Bootstrap CSS classes because this component is also
-                 used in the browser extension, which doesn't necessarily have Bootstrap CSS classes defined. */}
-                <div className="action-item__content">{content}</div>
+                {content} {isExternalLink && <OpenInNewIcon className={this.props.iconClassName} />}
                 {showLoadingSpinner && (
                     <div className="action-item__loader">
-                        <LoadingSpinner className="icon-inline" />
+                        <LoadingSpinner className={this.props.iconClassName} />
                     </div>
                 )}
             </LinkOrButton>
         )
     }
 
-    public runAction = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
+    public runAction = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>): void => {
         const action = (isAltEvent(e) && this.props.altAction) || this.props.action
 
         if (!action.command) {
@@ -230,7 +244,7 @@ export class ActionItem extends React.PureComponent<Props, State> {
         }
 
         // Record action ID (but not args, which might leak sensitive data).
-        this.context.log(action.id)
+        this.props.telemetryService.log(action.id)
 
         if (urlForClientCommandOpen(action, this.props.location)) {
             if (e.currentTarget.tagName === 'A' && e.currentTarget.hasAttribute('href')) {
@@ -263,13 +277,21 @@ export class ActionItem extends React.PureComponent<Props, State> {
     }
 }
 
-function urlForClientCommandOpen(action: EvaluatedActionContribution, location: H.Location): string | undefined {
-    if (action.command === 'open' && action.commandArguments && typeof action.commandArguments[0] === 'string') {
-        return action.commandArguments[0]
+function urlForClientCommandOpen(action: Evaluated<ActionContribution>, location: H.Location): string | undefined {
+    if (action.command === 'open' && action.commandArguments) {
+        const url = action.commandArguments[0]
+        if (typeof url !== 'string') {
+            return undefined
+        }
+        return url
     }
 
-    if (action.command === 'openPanel' && action.commandArguments && typeof action.commandArguments[0] === 'string') {
-        return urlForOpenPanel(action.commandArguments[0], location.hash)
+    if (action.command === 'openPanel' && action.commandArguments) {
+        const url = action.commandArguments[0]
+        if (typeof url !== 'string') {
+            return undefined
+        }
+        return urlForOpenPanel(url, location.hash)
     }
 
     return undefined

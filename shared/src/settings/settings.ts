@@ -1,4 +1,4 @@
-import { cloneDeep, isFunction, isPlainObject } from 'lodash'
+import { cloneDeep, isFunction } from 'lodash'
 import * as GQL from '../graphql/schema'
 import { createAggregateError, ErrorLike, isErrorLike } from '../util/errors'
 import { parseJSONCOrError } from '../util/jsonc'
@@ -18,6 +18,9 @@ export interface IClient {
  */
 export interface Settings {
     extensions?: { [extensionID: string]: boolean }
+    experimentalFeatures?: {
+        showBadgeAttachments?: boolean
+    }
     [key: string]: any
 
     // These properties should never exist on Settings but do exist on SettingsCascade. This makes it so the
@@ -32,13 +35,14 @@ export interface Settings {
  * A settings subject is something that can have settings associated with it, such as a site ("global
  * settings"), an organization ("organization settings"), a user ("user settings"), etc.
  */
-export type SettingsSubject = Pick<GQL.ISettingsSubject, 'id' | 'settingsURL' | 'viewerCanAdminister'> &
+export type SettingsSubject = Pick<GQL.ISettingsSubject, 'id' | 'viewerCanAdminister'> &
     (
         | Pick<IClient, '__typename' | 'displayName'>
         | Pick<GQL.IUser, '__typename' | 'username' | 'displayName'>
         | Pick<GQL.IOrg, '__typename' | 'name' | 'displayName'>
         | Pick<GQL.ISite, '__typename'>
-        | Pick<GQL.IDefaultSettings, '__typename'>)
+        | Pick<GQL.IDefaultSettings, '__typename'>
+    )
 
 /**
  * A cascade of settings from multiple subjects, from lowest precedence to highest precedence, and the final
@@ -100,7 +104,7 @@ export const EMPTY_SETTINGS_CASCADE: SettingsCascade = { final: {}, subjects: []
  *
  * @template S the settings type
  */
-export interface ConfiguredSubject<S extends Settings = Settings> {
+interface ConfiguredSubject<S extends Settings = Settings> {
     /** The subject. */
     subject: SettingsSubject
 
@@ -177,9 +181,17 @@ export function mergeSettings<S extends Settings>(values: S[]): S | null {
     if (values.length === 0) {
         return null
     }
+    const customFunctions: CustomMergeFunctions = {
+        extensions: (base: any, add: any) => ({ ...base, ...add }),
+        notices: (base: any, add: any) => [...base, ...add],
+        'search.scopes': (base: any, add: any) => [...base, ...add],
+        'search.savedQueries': (base: any, add: any) => [...base, ...add],
+        'search.repositoryGroups': (base: any, add: any) => ({ ...base, ...add }),
+        quicklinks: (base: any, add: any) => [...base, ...add],
+    }
     const target = cloneDeep(values[0])
     for (const value of values.slice(1)) {
-        merge(target, value)
+        merge(target, value, customFunctions)
     }
     return target
 }
@@ -189,8 +201,10 @@ export interface CustomMergeFunctions {
 }
 
 /**
- * Deeply merges add into base (modifying base). The merged value for a key path can be customized by providing a
- * function at the same key path in custom.
+ * Shallow merges add into base (modifying base). Only the top-level object is smerged.
+ *
+ * The merged value for a key path can be customized by providing a
+ * function at the same key path in `custom`.
  *
  * Most callers should use mergeSettings, which uses the set of CustomMergeFunctions that are required to properly
  * merge settings.
@@ -198,11 +212,9 @@ export interface CustomMergeFunctions {
 export function merge(base: any, add: any, custom?: CustomMergeFunctions): void {
     for (const key of Object.keys(add)) {
         if (key in base) {
-            const customEntry = custom && custom[key]
+            const customEntry = custom?.[key]
             if (customEntry && isFunction(customEntry)) {
                 base[key] = customEntry(base[key], add[key])
-            } else if (isPlainObject(base[key]) && isPlainObject(add[key])) {
-                merge(base[key], add[key], customEntry)
             } else {
                 base[key] = add[key]
             }
@@ -233,6 +245,6 @@ export function isSettingsValid<S extends Settings>(
 /**
  * React partial props for components needing the settings cascade.
  */
-export interface SettingsCascadeProps {
-    settingsCascade: SettingsCascadeOrError
+export interface SettingsCascadeProps<S extends Settings = Settings> {
+    settingsCascade: SettingsCascadeOrError<S>
 }

@@ -1,66 +1,90 @@
-import { ProxyValue, proxyValue, proxyValueSymbol } from '@sourcegraph/comlink'
+import * as comlink from '@sourcegraph/comlink'
 import { isEqual, omit } from 'lodash'
-import { combineLatest, from, of, ReplaySubject, Unsubscribable } from 'rxjs'
-import { distinctUntilChanged, filter, map, switchMap } from 'rxjs/operators'
-import { PanelView } from 'sourcegraph'
-import { isDefined } from '../../../util/types'
+import { combineLatest, from, ReplaySubject, Unsubscribable, ObservableInput } from 'rxjs'
+import { distinctUntilChanged, map, switchMap } from 'rxjs/operators'
+import { PanelView, View } from 'sourcegraph'
 import { ContributableViewContainer } from '../../protocol'
-import { modelToTextDocumentPositionParams } from '../model'
+import { ViewerService, getActiveCodeEditorPosition } from '../services/viewerService'
 import { TextDocumentLocationProviderIDRegistry } from '../services/location'
-import { ModelService } from '../services/modelService'
-import { PanelViewWithComponent, ViewProviderRegistry } from '../services/view'
+import { PanelViewWithComponent, PanelViewProviderRegistry } from '../services/panelViews'
+import { Location } from '@sourcegraph/extension-api-types'
+import { MaybeLoadingResult } from '@sourcegraph/codeintellify'
+import { ProxySubscribable } from '../../extension/api/common'
+import { wrapRemoteObservable } from './common'
+import { ViewService, ViewContexts } from '../services/viewService'
 
 /** @internal */
 export interface PanelViewData extends Pick<PanelView, 'title' | 'content' | 'priority' | 'component'> {}
 
-export interface PanelUpdater extends Unsubscribable, ProxyValue {
+export interface PanelUpdater extends Unsubscribable, comlink.ProxyMarked {
     update(data: PanelViewData): void
 }
 
 /** @internal */
-export interface ClientViewsAPI extends ProxyValue {
+export interface ClientViewsAPI extends comlink.ProxyMarked {
     $registerPanelViewProvider(provider: { id: string }): PanelUpdater
+
+    $registerDirectoryViewProvider(
+        id: string,
+        provider: comlink.Remote<
+            ((context: ViewContexts[typeof ContributableViewContainer.Directory]) => ProxySubscribable<View | null>) &
+                comlink.ProxyMarked
+        >
+    ): Unsubscribable & comlink.ProxyMarked
+
+    $registerGlobalPageViewProvider(
+        id: string,
+        provider: comlink.Remote<
+            ((context: ViewContexts[typeof ContributableViewContainer.GlobalPage]) => ProxySubscribable<View | null>) &
+                comlink.ProxyMarked
+        >
+    ): Unsubscribable & comlink.ProxyMarked
 }
 
 /** @internal */
 export class ClientViews implements ClientViewsAPI {
-    public readonly [proxyValueSymbol] = true
+    public readonly [comlink.proxyMarker] = true
 
     constructor(
-        private viewRegistry: ViewProviderRegistry,
+        private panelViewRegistry: PanelViewProviderRegistry,
         private textDocumentLocations: TextDocumentLocationProviderIDRegistry,
-        private modelService: ModelService
+        private viewerService: ViewerService,
+        private viewService: ViewService
     ) {}
 
     public $registerPanelViewProvider(provider: { id: string }): PanelUpdater {
         // TODO(sqs): This will probably hang forever if an extension neglects to set any of the fields on a
         // PanelView because this subject will never emit.
         const panelView = new ReplaySubject<PanelViewData>(1)
-        const registryUnsubscribable = this.viewRegistry.registerProvider(
+        const registryUnsubscribable = this.panelViewRegistry.registerProvider(
             { ...provider, container: ContributableViewContainer.Panel },
-            combineLatest(
+            combineLatest([
                 panelView.pipe(
                     map(data => omit(data, 'component')),
                     distinctUntilChanged((x, y) => isEqual(x, y))
                 ),
                 panelView.pipe(
                     map(({ component }) => component),
-                    filter(isDefined),
-                    map(({ locationProvider }) => locationProvider),
-                    distinctUntilChanged(),
-                    map(locationProvider =>
-                        from(this.modelService.model).pipe(
-                            switchMap(model => {
-                                const params = modelToTextDocumentPositionParams(model)
-                                if (!params) {
-                                    return of(of(null))
+                    distinctUntilChanged((a, b) => isEqual(a, b)),
+                    map(component => {
+                        if (!component) {
+                            return undefined
+                        }
+
+                        return from(this.viewerService.activeViewerUpdates).pipe(
+                            map(getActiveCodeEditorPosition),
+                            switchMap(
+                                (params): ObservableInput<MaybeLoadingResult<Location[]>> => {
+                                    if (!params) {
+                                        return [{ isLoading: false, result: [] }]
+                                    }
+                                    return this.textDocumentLocations.getLocations(component.locationProvider, params)
                                 }
-                                return this.textDocumentLocations.getLocations(locationProvider, params)
-                            })
+                            )
                         )
-                    )
-                )
-            ).pipe(
+                    })
+                ),
+            ]).pipe(
                 map(([{ title, content, priority }, locationProvider]) => {
                     const panelView: PanelViewWithComponent = {
                         title,
@@ -72,7 +96,7 @@ export class ClientViews implements ClientViewsAPI {
                 })
             )
         )
-        return proxyValue({
+        return comlink.proxy({
             update: (data: PanelViewData) => {
                 panelView.next(data)
             },
@@ -80,5 +104,35 @@ export class ClientViews implements ClientViewsAPI {
                 registryUnsubscribable.unsubscribe()
             },
         })
+    }
+
+    public $registerDirectoryViewProvider(
+        id: string,
+        provider: comlink.Remote<
+            (
+                context: ViewContexts[typeof ContributableViewContainer.Directory]
+            ) => ProxySubscribable<View | null> & comlink.ProxyMarked
+        >
+    ): Unsubscribable & comlink.ProxyMarked {
+        return comlink.proxy(
+            this.viewService.register(id, ContributableViewContainer.Directory, context =>
+                wrapRemoteObservable(provider(context))
+            )
+        )
+    }
+
+    public $registerGlobalPageViewProvider(
+        id: string,
+        provider: comlink.Remote<
+            (
+                context: ViewContexts[typeof ContributableViewContainer.GlobalPage]
+            ) => ProxySubscribable<View | null> & comlink.ProxyMarked
+        >
+    ): Unsubscribable & comlink.ProxyMarked {
+        return comlink.proxy(
+            this.viewService.register(id, ContributableViewContainer.GlobalPage, context =>
+                wrapRemoteObservable(provider(context))
+            )
+        )
     }
 }

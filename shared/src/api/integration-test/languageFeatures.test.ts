@@ -1,11 +1,11 @@
+import { MarkupKind } from '@sourcegraph/extension-api-classes'
 import { Location } from '@sourcegraph/extension-api-types'
 import { asyncScheduler, Observable, of } from 'rxjs'
-import { observeOn, switchMap, take, toArray } from 'rxjs/operators'
+import { observeOn, take, toArray, map, first } from 'rxjs/operators'
 import * as sourcegraph from 'sourcegraph'
-import { languages as sourcegraphLanguages } from 'sourcegraph'
 import { Services } from '../client/services'
-import { assertToJSON } from '../extension/types/testHelpers'
-import { createBarrier, integrationTestContext } from './testHelpers'
+import { assertToJSON, createBarrier, integrationTestContext } from './testHelpers'
+import { MaybeLoadingResult } from '@sourcegraph/codeintellify'
 
 describe('LanguageFeatures (integration)', () => {
     testLocationProvider<sourcegraph.HoverProvider>({
@@ -14,18 +14,19 @@ describe('LanguageFeatures (integration)', () => {
         labeledProvider: label => ({
             provideHover: (doc: sourcegraph.TextDocument, pos: sourcegraph.Position) =>
                 of({
-                    contents: { value: label, kind: sourcegraph.MarkupKind.PlainText },
+                    contents: { value: label, kind: MarkupKind.PlainText },
                 }).pipe(observeOn(asyncScheduler)),
         }),
         labeledProviderResults: labels => ({
-            contents: labels.map(label => ({ value: label, kind: sourcegraph.MarkupKind.PlainText })),
+            contents: labels.map(label => ({ value: label, kind: MarkupKind.PlainText })),
         }),
         providerWithImplementation: run => ({ provideHover: run } as sourcegraph.HoverProvider),
-        getResult: services =>
+        getResult: (services, uri) =>
             services.textDocumentHover.getHover({
-                textDocument: { uri: 'file:///f' },
+                textDocument: { uri },
                 position: { line: 1, character: 2 },
             }),
+        emptyResultValue: null,
     })
     testLocationProvider<sourcegraph.DefinitionProvider>({
         name: 'registerDefinitionProvider',
@@ -36,13 +37,12 @@ describe('LanguageFeatures (integration)', () => {
         }),
         labeledProviderResults: labeledDefinitionResults,
         providerWithImplementation: run => ({ provideDefinition: run } as sourcegraph.DefinitionProvider),
-        getResult: services =>
-            services.textDocumentDefinition
-                .getLocations({
-                    textDocument: { uri: 'file:///f' },
-                    position: { line: 1, character: 2 },
-                })
-                .pipe(switchMap(locations => locations)),
+        getResult: (services, uri) =>
+            services.textDocumentDefinition.getLocations({
+                textDocument: { uri },
+                position: { line: 1, character: 2 },
+            }),
+        emptyResultValue: [],
     })
     testLocationProvider<sourcegraph.ReferenceProvider>({
         name: 'registerReferenceProvider',
@@ -63,14 +63,13 @@ describe('LanguageFeatures (integration)', () => {
                     _context: sourcegraph.ReferenceContext
                 ) => run(doc, pos),
             } as sourcegraph.ReferenceProvider),
-        getResult: services =>
-            services.textDocumentReferences
-                .getLocations({
-                    textDocument: { uri: 'file:///f' },
-                    position: { line: 1, character: 2 },
-                    context: { includeDeclaration: true },
-                })
-                .pipe(switchMap(locations => locations)),
+        getResult: (services, uri) =>
+            services.textDocumentReferences.getLocations({
+                textDocument: { uri },
+                position: { line: 1, character: 2 },
+                context: { includeDeclaration: true },
+            }),
+        emptyResultValue: [],
     })
     testLocationProvider<sourcegraph.LocationProvider>({
         name: 'registerLocationProvider',
@@ -85,13 +84,12 @@ describe('LanguageFeatures (integration)', () => {
             ({
                 provideLocations: (doc: sourcegraph.TextDocument, pos: sourcegraph.Position) => run(doc, pos),
             } as sourcegraph.LocationProvider),
-        getResult: services =>
-            services.textDocumentLocations
-                .getLocations('x', {
-                    textDocument: { uri: 'file:///f' },
-                    position: { line: 1, character: 2 },
-                })
-                .pipe(switchMap(x => x)),
+        getResult: (services, uri) =>
+            services.textDocumentLocations.getLocations('x', {
+                textDocument: { uri },
+                position: { line: 1, character: 2 },
+            }),
+        emptyResultValue: [],
     })
 })
 
@@ -106,39 +104,73 @@ function testLocationProvider<P>({
     labeledProviderResults,
     providerWithImplementation,
     getResult,
+    emptyResultValue,
 }: {
-    name: keyof typeof sourcegraphLanguages
+    name: keyof typeof sourcegraph.languages
     registerProvider: (
         extensionAPI: typeof sourcegraph
     ) => (selector: sourcegraph.DocumentSelector, provider: P) => sourcegraph.Unsubscribable
     labeledProvider: (label: string) => P
     labeledProviderResults: (labels: string[]) => any
     providerWithImplementation: (run: (doc: sourcegraph.TextDocument, pos: sourcegraph.Position) => void) => P
-    getResult: (services: Services) => Observable<any>
+    getResult: (services: Services, uri: string) => Observable<MaybeLoadingResult<unknown>>
+    emptyResultValue: unknown
 }): void {
     describe(`languages.${name}`, () => {
-        test('registers and unregisters a single provider', async () => {
+        it('registers and unregisters a single provider', async () => {
             const { services, extensionAPI } = await integrationTestContext()
 
             // Register the provider and call it.
             const subscription = registerProvider(extensionAPI)(['*'], labeledProvider('a'))
             await extensionAPI.internal.sync()
             expect(
-                await getResult(services)
-                    .pipe(take(1))
+                await getResult(services, 'file:///f')
+                    .pipe(
+                        first(({ isLoading }) => !isLoading),
+                        map(({ result }) => result)
+                    )
                     .toPromise()
             ).toEqual(labeledProviderResults(['a']))
 
             // Unregister the provider and ensure it's removed.
             subscription.unsubscribe()
             expect(
-                await getResult(services)
-                    .pipe(take(1))
+                await getResult(services, 'file:///f')
+                    .pipe(
+                        first(({ isLoading }) => !isLoading),
+                        map(({ result }) => result)
+                    )
                     .toPromise()
-            ).toEqual(null)
+            ).toEqual(emptyResultValue)
         })
 
-        test('supplies params to the provideXyz method', async () => {
+        it('syncs with models', async () => {
+            const { services, extensionAPI } = await integrationTestContext()
+
+            const subscription = registerProvider(extensionAPI)(['*'], labeledProvider('a'))
+            await extensionAPI.internal.sync()
+
+            services.model.addModel({ uri: 'file:///f2', languageId: 'l1', text: 't1' })
+            services.viewer.addViewer({
+                type: 'CodeEditor',
+                resource: 'file:///f2',
+                selections: [],
+                isActive: true,
+            })
+
+            expect(
+                await getResult(services, 'file:///f2')
+                    .pipe(
+                        first(({ isLoading }) => !isLoading),
+                        map(({ result }) => result)
+                    )
+                    .toPromise()
+            ).toEqual(labeledProviderResults(['a']))
+
+            subscription.unsubscribe()
+        })
+
+        it('supplies params to the provideXyz method', async () => {
             const { services, extensionAPI } = await integrationTestContext()
             const { wait, done } = createBarrier()
             registerProvider(extensionAPI)(
@@ -150,13 +182,16 @@ function testLocationProvider<P>({
                 })
             )
             await extensionAPI.internal.sync()
-            await getResult(services)
-                .pipe(take(1))
+            await getResult(services, 'file:///f')
+                .pipe(
+                    first(({ isLoading }) => !isLoading),
+                    map(({ result }) => result)
+                )
                 .toPromise()
             await wait
         })
 
-        test('supports multiple providers', async () => {
+        it('supports multiple providers', async () => {
             const { services, extensionAPI } = await integrationTestContext()
 
             // Register 2 providers with different results.
@@ -165,14 +200,11 @@ function testLocationProvider<P>({
             await extensionAPI.internal.sync()
 
             // Expect it to emit the first provider's result first (and not block on both providers being ready).
-            expect(
-                await getResult(services)
-                    .pipe(
-                        take(2),
-                        toArray()
-                    )
-                    .toPromise()
-            ).toEqual([labeledProviderResults(['a']), labeledProviderResults(['a', 'b'])])
+            expect(await getResult(services, 'file:///f').pipe(take(3), toArray()).toPromise()).toEqual([
+                { isLoading: true, result: emptyResultValue },
+                { isLoading: true, result: labeledProviderResults(['a']) },
+                { isLoading: false, result: labeledProviderResults(['a', 'b']) },
+            ])
         })
     })
 }

@@ -1,27 +1,31 @@
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import { upperFirst } from 'lodash'
 import AlertCircleIcon from 'mdi-react/AlertCircleIcon'
 import MapSearchIcon from 'mdi-react/MapSearchIcon'
 import * as React from 'react'
 import { Route, RouteComponentProps, Switch } from 'react-router'
 import { combineLatest, merge, Observable, of, Subject, Subscription } from 'rxjs'
-import { catchError, distinctUntilChanged, map, mapTo, startWith, switchMap } from 'rxjs/operators'
+import { catchError, distinctUntilChanged, map, mapTo, startWith, switchMap, filter } from 'rxjs/operators'
 import { ActivationProps } from '../../../../shared/src/components/activation/Activation'
-import { gql } from '../../../../shared/src/graphql/graphql'
+import { ExtensionsControllerProps } from '../../../../shared/src/extensions/controller'
+import { gql, dataOrThrowErrors } from '../../../../shared/src/graphql/graphql'
 import * as GQL from '../../../../shared/src/graphql/schema'
 import { PlatformContextProps } from '../../../../shared/src/platform/context'
 import { SettingsCascadeProps } from '../../../../shared/src/settings/settings'
-import { createAggregateError, ErrorLike, isErrorLike } from '../../../../shared/src/util/errors'
+import { isErrorLike, asError } from '../../../../shared/src/util/errors'
 import { queryGraphQL } from '../../backend/graphql'
 import { ErrorBoundary } from '../../components/ErrorBoundary'
 import { HeroPage } from '../../components/HeroPage'
-import { ThemeProps } from '../../theme'
+import { NamespaceProps } from '../../namespaces'
+import { ThemeProps } from '../../../../shared/src/theme'
 import { RouteDescriptor } from '../../util/contributions'
-import { UserAccountAreaRoute } from '../account/UserAccountArea'
-import { UserAccountSidebarItems } from '../account/UserAccountSidebar'
+import { UserSettingsAreaRoute } from '../settings/UserSettingsArea'
+import { UserSettingsSidebarItems } from '../settings/UserSettingsSidebar'
 import { UserAreaHeader, UserAreaHeaderNavItem } from './UserAreaHeader'
+import { PatternTypeProps } from '../../search'
+import { ErrorMessage } from '../../components/alerts'
+import { isDefined } from '../../../../shared/src/util/types'
 
-const fetchUser = (args: { username: string }): Observable<GQL.IUser | null> =>
+const fetchUser = (args: { username: string }): Observable<GQL.IUser> =>
     queryGraphQL(
         gql`
             query User($username: String!) {
@@ -35,6 +39,7 @@ const fetchUser = (args: { username: string }): Observable<GQL.IUser | null> =>
                     avatarURL
                     viewerCanAdminister
                     siteAdmin
+                    builtinAuth
                     createdAt
                     emails {
                         email
@@ -52,30 +57,33 @@ const fetchUser = (args: { username: string }): Observable<GQL.IUser | null> =>
         `,
         args
     ).pipe(
-        map(({ data, errors }) => {
-            if (!data || !data.user) {
-                throw createAggregateError(errors)
+        map(dataOrThrowErrors),
+        map(data => {
+            if (!data.user) {
+                throw new Error(`User not found: ${JSON.stringify(args.username)}`)
             }
             return data.user
         })
     )
 
-const NotFoundPage = () => (
-    <HeroPage icon={MapSearchIcon} title="404: Not Found" subtitle="Sorry, the requested user was not found." />
+const NotFoundPage: React.FunctionComponent = () => (
+    <HeroPage icon={MapSearchIcon} title="404: Not Found" subtitle="Sorry, the requested user page was not found." />
 )
 
 export interface UserAreaRoute extends RouteDescriptor<UserAreaRouteContext> {}
 
 interface UserAreaProps
     extends RouteComponentProps<{ username: string }>,
+        ExtensionsControllerProps,
         PlatformContextProps,
         SettingsCascadeProps,
         ThemeProps,
-        ActivationProps {
-    userAreaRoutes: ReadonlyArray<UserAreaRoute>
-    userAreaHeaderNavItems: ReadonlyArray<UserAreaHeaderNavItem>
-    userAccountSideBarItems: UserAccountSidebarItems
-    userAccountAreaRoutes: ReadonlyArray<UserAccountAreaRoute>
+        ActivationProps,
+        Omit<PatternTypeProps, 'setPatternType'> {
+    userAreaRoutes: readonly UserAreaRoute[]
+    userAreaHeaderNavItems: readonly UserAreaHeaderNavItem[]
+    userSettingsSideBarItems: UserSettingsSidebarItems
+    userSettingsAreaRoutes: readonly UserSettingsAreaRoute[]
 
     /**
      * The currently authenticated user, NOT the user whose username is specified in the URL's "username" route
@@ -89,14 +97,21 @@ interface UserAreaState {
      * The fetched user (who is the subject of the page), or an error if an error occurred; undefined while
      * loading.
      */
-    userOrError?: GQL.IUser | ErrorLike
+    userOrError?: GQL.IUser | Error
 }
 
 /**
  * Properties passed to all page components in the user area.
  */
-export interface UserAreaRouteContext extends PlatformContextProps, SettingsCascadeProps, ThemeProps, ActivationProps {
-    /** The extension registry area main URL. */
+export interface UserAreaRouteContext
+    extends ExtensionsControllerProps,
+        PlatformContextProps,
+        SettingsCascadeProps,
+        ThemeProps,
+        ActivationProps,
+        NamespaceProps,
+        Omit<PatternTypeProps, 'setPatternType'> {
+    /** The user area main URL. */
     url: string
 
     /**
@@ -114,8 +129,8 @@ export interface UserAreaRouteContext extends PlatformContextProps, SettingsCasc
      * user is Bob.
      */
     authenticatedUser: GQL.IUser | null
-    userAccountSideBarItems: UserAccountSidebarItems
-    userAccountAreaRoutes: ReadonlyArray<UserAccountAreaRoute>
+    userSettingsSideBarItems: UserSettingsSidebarItems
+    userSettingsAreaRoutes: readonly UserSettingsAreaRoute[]
 }
 
 /**
@@ -124,26 +139,27 @@ export interface UserAreaRouteContext extends PlatformContextProps, SettingsCasc
 export class UserArea extends React.Component<UserAreaProps, UserAreaState> {
     public state: UserAreaState = {}
 
-    private routeMatchChanges = new Subject<{ username: string }>()
+    private componentUpdates = new Subject<UserAreaProps>()
     private refreshRequests = new Subject<void>()
     private subscriptions = new Subscription()
 
     public componentDidMount(): void {
         // Changes to the route-matched username.
-        const usernameChanges = this.routeMatchChanges.pipe(
-            map(({ username }) => username),
+        const usernameChanges = this.componentUpdates.pipe(
+            map(props => props.match.params.username),
             distinctUntilChanged()
         )
 
         // Fetch user.
         this.subscriptions.add(
-            combineLatest(usernameChanges, merge(this.refreshRequests.pipe(mapTo(false)), of(true)))
+            combineLatest([usernameChanges, merge(this.refreshRequests.pipe(mapTo(false)), of(true))])
                 .pipe(
                     switchMap(([username, forceRefresh]) => {
                         type PartialStateUpdate = Pick<UserAreaState, 'userOrError'>
                         return fetchUser({ username }).pipe(
-                            catchError(error => [error]),
-                            map(c => ({ userOrError: c } as PartialStateUpdate)),
+                            filter(isDefined),
+                            catchError(error => [asError(error)]),
+                            map((c): PartialStateUpdate => ({ userOrError: c })),
 
                             // Don't clear old user data while we reload, to avoid unmounting all components during
                             // loading.
@@ -151,16 +167,17 @@ export class UserArea extends React.Component<UserAreaProps, UserAreaState> {
                         )
                     })
                 )
-                .subscribe(stateUpdate => this.setState(stateUpdate), err => console.error(err))
+                .subscribe(
+                    stateUpdate => this.setState(stateUpdate),
+                    err => console.error(err)
+                )
         )
 
-        this.routeMatchChanges.next(this.props.match.params)
+        this.componentUpdates.next(this.props)
     }
 
-    public componentWillReceiveProps(props: UserAreaProps): void {
-        if (props.match.params !== this.props.match.params) {
-            this.routeMatchChanges.next(props.match.params)
-        }
+    public componentDidUpdate(): void {
+        this.componentUpdates.next(this.props)
     }
 
     public componentWillUnmount(): void {
@@ -173,58 +190,57 @@ export class UserArea extends React.Component<UserAreaProps, UserAreaState> {
         }
         if (isErrorLike(this.state.userOrError)) {
             return (
-                <HeroPage icon={AlertCircleIcon} title="Error" subtitle={upperFirst(this.state.userOrError.message)} />
+                <HeroPage
+                    icon={AlertCircleIcon}
+                    title="Error"
+                    subtitle={<ErrorMessage error={this.state.userOrError} history={this.props.history} />}
+                />
             )
         }
 
         const context: UserAreaRouteContext = {
+            ...this.props,
             url: this.props.match.url,
             user: this.state.userOrError,
             onDidUpdateUser: this.onDidUpdateUser,
-            authenticatedUser: this.props.authenticatedUser,
-            platformContext: this.props.platformContext,
-            settingsCascade: this.props.settingsCascade,
-            isLightTheme: this.props.isLightTheme,
-            activation: this.props.activation,
-            userAccountAreaRoutes: this.props.userAccountAreaRoutes,
-            userAccountSideBarItems: this.props.userAccountSideBarItems,
+            namespace: this.state.userOrError,
         }
         return (
-            <div className="user-area area--vertical">
+            <div className="user-area w-100">
                 <UserAreaHeader
-                    className="area--vertical__header"
                     {...this.props}
                     {...context}
                     navItems={this.props.userAreaHeaderNavItems}
+                    className="border-bottom mt-4"
                 />
-                <div className="area--vertical__content">
-                    <div className="area--vertical__content-inner">
-                        <ErrorBoundary location={this.props.location}>
-                            <React.Suspense fallback={<LoadingSpinner className="icon-inline m-2" />}>
-                                <Switch>
-                                    {this.props.userAreaRoutes.map(
-                                        ({ path, exact, render, condition = () => true }) =>
-                                            condition(context) && (
-                                                <Route
-                                                    path={this.props.match.url + path}
-                                                    key="hardcoded-key" // see https://github.com/ReactTraining/react-router/issues/4578#issuecomment-334489490
-                                                    exact={exact}
-                                                    // tslint:disable-next-line:jsx-no-lambda
-                                                    render={routeComponentProps =>
-                                                        render({ ...context, ...routeComponentProps })
-                                                    }
-                                                />
-                                            )
-                                    )}
-                                    <Route key="hardcoded-key" component={NotFoundPage} />
-                                </Switch>
-                            </React.Suspense>
-                        </ErrorBoundary>
-                    </div>
+                <div className="container mt-3">
+                    <ErrorBoundary location={this.props.location}>
+                        <React.Suspense fallback={<LoadingSpinner className="icon-inline m-2" />}>
+                            <Switch>
+                                {this.props.userAreaRoutes.map(
+                                    ({ path, exact, render, condition = () => true }) =>
+                                        condition(context) && (
+                                            <Route
+                                                // eslint-disable-next-line react/jsx-no-bind
+                                                render={routeComponentProps =>
+                                                    render({ ...context, ...routeComponentProps })
+                                                }
+                                                path={this.props.match.url + path}
+                                                key="hardcoded-key" // see https://github.com/ReactTraining/react-router/issues/4578#issuecomment-334489490
+                                                exact={exact}
+                                            />
+                                        )
+                                )}
+                                <Route key="hardcoded-key" component={NotFoundPage} />
+                            </Switch>
+                        </React.Suspense>
+                    </ErrorBoundary>
                 </div>
             </div>
         )
     }
 
-    private onDidUpdateUser = () => this.refreshRequests.next()
+    private onDidUpdateUser = (): void => {
+        this.refreshRequests.next()
+    }
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/graph-gophers/graphql-go/relay"
@@ -136,8 +135,8 @@ func (r *productSubscription) ProductLicenses(ctx context.Context, args *graphql
 	return &productLicenseConnection{opt: opt}, nil
 }
 
-func (r *productSubscription) CreatedAt() string {
-	return r.v.CreatedAt.Format(time.RFC3339)
+func (r *productSubscription) CreatedAt() graphqlbackend.DateTime {
+	return graphqlbackend.DateTime{Time: r.v.CreatedAt}
 }
 
 func (r *productSubscription) IsArchived() bool { return r.v.ArchivedAt != nil }
@@ -147,7 +146,7 @@ func (r *productSubscription) URL(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return accountUser.URL() + "/subscriptions/" + string(r.v.ID), nil
+	return *accountUser.SettingsURL() + "/subscriptions/" + string(r.v.ID), nil
 }
 
 func (r *productSubscription) URLForSiteAdmin(ctx context.Context) *string {
@@ -263,7 +262,9 @@ func (ProductSubscriptionLicensingResolver) CreatePaidProductSubscription(ctx co
 	custUpdateParams := &stripe.CustomerParams{
 		Params: stripe.Params{Context: ctx},
 	}
-	custUpdateParams.SetSource(args.PaymentToken)
+	if err := custUpdateParams.SetSource(args.PaymentToken); err != nil {
+		return nil, err
+	}
 	if _, err := customer.Update(custID, custUpdateParams); err != nil {
 		return nil, err
 	}
@@ -342,7 +343,9 @@ func (ProductSubscriptionLicensingResolver) UpdatePaidProductSubscription(ctx co
 	custUpdateParams := &stripe.CustomerParams{
 		Params: stripe.Params{Context: ctx},
 	}
-	custUpdateParams.SetSource(args.PaymentToken)
+	if err := custUpdateParams.SetSource(args.PaymentToken); err != nil {
+		return nil, err
+	}
 	if _, err := customer.Update(custID, custUpdateParams); err != nil {
 		return nil, err
 	}
@@ -462,6 +465,17 @@ func (ProductSubscriptionLicensingResolver) ProductSubscriptions(ctx context.Con
 	if accountUser != nil {
 		opt.UserID = accountUser.DatabaseID()
 	}
+
+	if args.Query != nil {
+		// 🚨 SECURITY: Only site admins may query or view license for all users, or for any other user.
+		// Note this check is currently repetitive with the check above. However, it is duplicated here to
+		// ensure it remains in effect if the code path above chagnes.
+		if err := backend.CheckCurrentUserIsSiteAdmin(ctx); err != nil {
+			return nil, err
+		}
+		opt.Query = *args.Query
+	}
+
 	args.ConnectionArgs.Set(&opt.LimitOffset)
 	return &productSubscriptionConnection{opt: opt}, nil
 }

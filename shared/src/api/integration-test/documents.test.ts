@@ -1,34 +1,25 @@
 import { from } from 'rxjs'
 import { take } from 'rxjs/operators'
 import { TextDocument } from 'sourcegraph'
-import { collectSubscribableValues, integrationTestContext } from './testHelpers'
+import { assertToJSON, collectSubscribableValues, integrationTestContext } from './testHelpers'
 
 describe('Documents (integration)', () => {
     describe('workspace.textDocuments', () => {
         test('lists text documents', async () => {
             const { extensionAPI } = await integrationTestContext()
-            expect(extensionAPI.workspace.textDocuments).toEqual([
+            assertToJSON(extensionAPI.workspace.textDocuments, [
                 { uri: 'file:///f', languageId: 'l', text: 't' },
             ] as TextDocument[])
         })
 
         test('adds new text documents', async () => {
-            const { model, extensionAPI } = await integrationTestContext()
-            model.next({
-                ...model.value,
-                visibleViewComponents: [
-                    {
-                        type: 'textEditor',
-                        item: { uri: 'file:///f2', languageId: 'l2', text: 't2' },
-                        selections: [],
-                        isActive: true,
-                    },
-                ],
-            })
-            await from(extensionAPI.workspace.openedTextDocuments)
-                .pipe(take(1))
-                .toPromise()
-            expect(extensionAPI.workspace.textDocuments).toEqual([
+            const {
+                services: { model: modelService },
+                extensionAPI,
+            } = await integrationTestContext()
+            modelService.addModel({ uri: 'file:///f2', languageId: 'l2', text: 't2' })
+            await from(extensionAPI.workspace.openedTextDocuments).pipe(take(1)).toPromise()
+            assertToJSON(extensionAPI.workspace.textDocuments, [
                 { uri: 'file:///f', languageId: 'l', text: 't' },
                 { uri: 'file:///f2', languageId: 'l2', text: 't2' },
             ] as TextDocument[])
@@ -37,27 +28,18 @@ describe('Documents (integration)', () => {
 
     describe('workspace.openedTextDocuments', () => {
         test('fires when a text document is opened', async () => {
-            const { model, extensionAPI } = await integrationTestContext()
+            const {
+                services: { model: modelService },
+                extensionAPI,
+            } = await integrationTestContext()
 
             const values = collectSubscribableValues(extensionAPI.workspace.openedTextDocuments)
             expect(values).toEqual([] as TextDocument[])
 
-            model.next({
-                ...model.value,
-                visibleViewComponents: [
-                    {
-                        type: 'textEditor',
-                        item: { uri: 'file:///f2', languageId: 'l2', text: 't2' },
-                        selections: [],
-                        isActive: true,
-                    },
-                ],
-            })
-            await from(extensionAPI.workspace.openedTextDocuments)
-                .pipe(take(1))
-                .toPromise()
+            modelService.addModel({ uri: 'file:///f2', languageId: 'l2', text: 't2' })
+            await from(extensionAPI.workspace.openedTextDocuments).pipe(take(1)).toPromise()
 
-            expect(values).toEqual([{ uri: 'file:///f2', languageId: 'l2', text: 't2' }] as TextDocument[])
+            assertToJSON(values, [{ uri: 'file:///f2', languageId: 'l2', text: 't2' }] as TextDocument[])
         })
     })
 })

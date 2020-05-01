@@ -2,7 +2,7 @@ import H from 'history'
 import React from 'react'
 import { Subscription } from 'rxjs'
 import { map } from 'rxjs/operators'
-import { PanelViewWithComponent } from '../../../../shared/src/api/client/services/view'
+import { PanelViewWithComponent } from '../../../../shared/src/api/client/services/panelViews'
 import { ContributableViewContainer } from '../../../../shared/src/api/protocol'
 import { Markdown } from '../../../../shared/src/components/Markdown'
 import { ExtensionsControllerProps } from '../../../../shared/src/extensions/controller'
@@ -30,8 +30,8 @@ export class ExtensionViewsExploreSection extends React.PureComponent<Props, Sta
 
     public componentDidMount(): void {
         this.subscriptions.add(
-            this.props.extensionsController.services.views
-                .getViews(ContributableViewContainer.Panel)
+            this.props.extensionsController.services.panelViews
+                .getPanelViews(ContributableViewContainer.Panel)
                 .pipe(map(views => ({ views })))
                 .subscribe(stateUpdate => this.setState(stateUpdate))
         )
@@ -52,7 +52,7 @@ export class ExtensionViewsExploreSection extends React.PureComponent<Props, Sta
                     <div key={i} className="mt-5">
                         <h2>{view.title}</h2>
                         <div onClick={createLinkClickHandler(this.props.history)}>
-                            <Markdown dangerousInnerHTML={renderMarkdown(view.content)} />
+                            <Markdown dangerousInnerHTML={renderMarkdown(view.content)} history={this.props.history} />
                         </div>
                     </div>
                 ))}

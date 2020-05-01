@@ -1,5 +1,17 @@
+import { Position } from '@sourcegraph/extension-api-types'
 import minimatch from 'minimatch'
 import { DocumentFilter, DocumentSelector, TextDocument } from 'sourcegraph'
+
+/**
+ * The URI scheme for the resources that hold the body of comments (such as comments on a GitHub
+ * issue).
+ */
+export const COMMENT_URI_SCHEME = 'comment'
+
+/**
+ * The URI scheme for the resources that hold the body of snippets.
+ */
+export const SNIPPET_URI_SCHEME = 'snippet'
 
 /**
  * A literal to identify a text document in the client.
@@ -46,7 +58,7 @@ function isDocumentFilter(value: any): value is DocumentFilter {
 }
 
 function match1(selector: DocumentSelector, document: Pick<TextDocument, 'uri' | 'languageId'>): boolean {
-    return score(selector, document.uri, document.languageId) !== 0
+    return score(selector, new URL(document.uri), document.languageId) !== 0
 }
 
 /**
@@ -60,7 +72,7 @@ function match1(selector: DocumentSelector, document: Pick<TextDocument, 'uri' |
  * Taken from
  * https://github.com/Microsoft/vscode/blob/3d35801127f0a62d58d752bc613506e836c5d120/src/vs/editor/common/modes/languageSelector.ts#L24.
  */
-export function score(selector: DocumentSelector, candidateUri: string, candidateLanguage: string): number {
+export function score(selector: DocumentSelector, candidateUri: URL, candidateLanguage: string): number {
     // array -> take max individual value
     let ret = 0
     for (const filter of selector) {
@@ -75,28 +87,35 @@ export function score(selector: DocumentSelector, candidateUri: string, candidat
     return ret
 }
 
-function score1(selector: DocumentSelector[0], candidateUri: string, candidateLanguage: string): number {
+function score1(selector: DocumentSelector[0], candidateUri: URL, candidateLanguage: string): number {
     if (typeof selector === 'string') {
         // Shorthand notation: "mylang" -> {language: "mylang"}, "*" -> {language: "*""}.
         if (selector === '*') {
             return 5
-        } else if (selector === candidateLanguage) {
-            return 10
-        } else {
-            return 0
         }
+        if (selector === candidateLanguage) {
+            return 10
+        }
+        return 0
     }
 
-    const { language, scheme, pattern } = selector
+    const { language, scheme, pattern, baseUri } = selector
     if (!language && !scheme && !pattern) {
         // `{}` was passed as a document filter, treat it like a wildcard
         return 5
     }
     let ret = 0
     if (scheme) {
-        if (candidateUri.startsWith(scheme + ':')) {
+        if (candidateUri.protocol === scheme + ':') {
             ret = 10
         } else if (scheme === '*') {
+            ret = 5
+        } else {
+            return 0
+        }
+    }
+    if (baseUri) {
+        if (candidateUri.href.startsWith(baseUri.toString())) {
             ret = 5
         } else {
             return 0
@@ -112,13 +131,49 @@ function score1(selector: DocumentSelector[0], candidateUri: string, candidateLa
         }
     }
     if (pattern) {
-        if (pattern === candidateUri || candidateUri.endsWith(pattern) || minimatch(candidateUri, pattern)) {
+        const filePath = decodeURIComponent(
+            candidateUri.protocol === 'git:' ? candidateUri.hash.slice(1) : candidateUri.pathname.replace(/^\//, '')
+        )
+        if (filePath.endsWith(pattern) || minimatch(filePath, pattern)) {
             ret = 10
-        } else if (minimatch(candidateUri, '**/' + pattern)) {
+        } else if (filePath && minimatch(filePath, pattern, { dot: true, matchBase: true })) {
             ret = 5
         } else {
             return 0
         }
     }
     return ret
+}
+
+/**
+ * Convert a character offset in text to the equivalent position.
+ */
+export function offsetToPosition(text: string, offset: number): Position {
+    if (offset <= 0) {
+        return { line: 0, character: 0 }
+    }
+    const before = text.slice(0, offset)
+    const newLines = before.match(/\n/g)
+    const line = newLines ? newLines.length : 0
+    const pre = before.match(/(^|\n).*$/g)
+    return { line, character: pre ? pre[0].length + (line === 0 ? 0 : -1) : 0 }
+}
+
+/**
+ * Convert a position in text to the equivalent character offset.
+ */
+export function positionToOffset(text: string, pos: Position): number {
+    if (pos.line === 0) {
+        return pos.character
+    }
+    let line = 0
+    let lastNewLineOffset = -1
+    do {
+        if (pos.line === line) {
+            return lastNewLineOffset + 1 + pos.character
+        }
+        lastNewLineOffset = text.indexOf('\n', lastNewLineOffset + 1)
+        line++
+    } while (lastNewLineOffset >= 0)
+    return text.length
 }

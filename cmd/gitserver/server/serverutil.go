@@ -16,29 +16,109 @@ import (
 	"sync"
 	"time"
 
-	log15 "gopkg.in/inconshreveable/log15.v2"
+	"github.com/inconshreveable/log15"
+	"github.com/pkg/errors"
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/conf"
+	"github.com/sourcegraph/sourcegraph/internal/gitserver/protocol"
 )
+
+// GitDir is an absolute path to a GIT_DIR.
+// They will all follow the form:
+//
+//    ${s.ReposDir}/${name}/.git
+type GitDir string
+
+// Path is a helper which returns filepath.Join(dir, elem...)
+func (dir GitDir) Path(elem ...string) string {
+	return filepath.Join(append([]string{string(dir)}, elem...)...)
+}
+
+func (s *Server) dir(name api.RepoName) GitDir {
+	path := string(protocol.NormalizeRepo(name))
+	return GitDir(filepath.Join(s.ReposDir, filepath.FromSlash(path), ".git"))
+}
+
+func (s *Server) name(dir GitDir) api.RepoName {
+	// dir == ${s.ReposDir}/${name}/.git
+	parent := filepath.Dir(string(dir))                   // remove suffix "/.git"
+	name := strings.TrimPrefix(parent, s.ReposDir)        // remove prefix "${s.ReposDir}"
+	name = strings.Trim(name, string(filepath.Separator)) // remove /
+	name = filepath.ToSlash(name)                         // filepath -> path
+	return protocol.NormalizeRepo(api.RepoName(name))
+}
+
+func isAlwaysCloningTest(name api.RepoName) bool {
+	return protocol.NormalizeRepo(name) == "github.com/sourcegraphtest/alwayscloningtest"
+}
+
+// checkSpecArgSafety returns a non-nil err if spec begins with a "-", which could
+// cause it to be interpreted as a git command line argument.
+func checkSpecArgSafety(spec string) error {
+	if strings.HasPrefix(spec, "-") {
+		return errors.Errorf("invalid git revision spec %q (begins with '-')", spec)
+	}
+	return nil
+}
+
+type tlsConfig struct {
+	// Whether to not verify the SSL certificate when fetching or pushing over
+	// HTTPS.
+	//
+	// https://git-scm.com/docs/git-config#Documentation/git-config.txt-httpsslVerify
+	SSLNoVerify bool
+
+	// File containing the certificates to verify the peer with when fetching
+	// or pushing over HTTPS.
+	//
+	// https://git-scm.com/docs/git-config#Documentation/git-config.txt-httpsslCAInfo
+	SSLCAInfo string
+}
+
+var tlsExternal = conf.Cached(func() interface{} {
+	c := conf.Get().ExperimentalFeatures.TlsExternal
+
+	if c == nil {
+		return &tlsConfig{}
+	}
+
+	sslCAInfo := ""
+	if len(c.Certificates) > 0 {
+		var b bytes.Buffer
+		for _, cert := range c.Certificates {
+			b.WriteString(cert)
+			b.WriteString("\n")
+		}
+		// We don't clean up the file since it has a process life time.
+		p, err := writeTempFile("gitserver*.crt", b.Bytes())
+		if err != nil {
+			log15.Error("failed to create file holding tls.external.certificates for git", "error", err)
+		} else {
+			sslCAInfo = p
+		}
+	}
+
+	return &tlsConfig{
+		SSLNoVerify: c.InsecureSkipVerify,
+		SSLCAInfo:   sslCAInfo,
+	}
+})
+
+func runWithRemoteOpts(ctx context.Context, cmd *exec.Cmd, progress io.Writer) ([]byte, error) {
+	return runWith(ctx, cmd, true, progress)
+}
 
 // runWithRemoteOpts runs the command after applying the remote options.
 // If progress is not nil, all output is written to it in a separate goroutine.
-func (s *Server) runWithRemoteOpts(ctx context.Context, cmd *exec.Cmd, progress io.Writer) ([]byte, error) {
-	cmd.Env = append(cmd.Env, "GIT_ASKPASS=true") // disable password prompt
-
-	// Suppress asking to add SSH host key to known_hosts (which will hang because
-	// the command is non-interactive).
-	//
-	// And set a timeout to avoid indefinite hangs if the server is unreachable.
-	cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=30")
-
-	extraArgs := []string{
-		// Unset credential helper because the command is non-interactive.
-		"-c", "credential.helper=",
-
-		// Use Git wire protocol version 2.
-		// https://opensource.googleblog.com/2018/05/introducing-git-protocol-version-2.html
-		"-c", "protocol.version=2",
+func runWith(ctx context.Context, cmd *exec.Cmd, configRemoteOpts bool, progress io.Writer) ([]byte, error) {
+	if configRemoteOpts {
+		// Inherit process environment. This allows admins to configure
+		// variables like http_proxy/etc.
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
+		}
+		configureRemoteGitCommand(cmd, tlsExternal().(*tlsConfig))
 	}
-	cmd.Args = append(cmd.Args[:1], append(extraArgs, cmd.Args[1:]...)...)
 
 	var b interface {
 		Bytes() []byte
@@ -68,15 +148,71 @@ func (s *Server) runWithRemoteOpts(ctx context.Context, cmd *exec.Cmd, progress 
 	return b.Bytes(), err
 }
 
+func configureRemoteGitCommand(cmd *exec.Cmd, tlsConf *tlsConfig) {
+	if cmd.Args[0] != "git" {
+		panic("Only git commands are supported")
+	}
+
+	cmd.Env = append(cmd.Env, "GIT_ASKPASS=true") // disable password prompt
+
+	// Suppress asking to add SSH host key to known_hosts (which will hang because
+	// the command is non-interactive).
+	//
+	// And set a timeout to avoid indefinite hangs if the server is unreachable.
+	cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=30")
+
+	if tlsConf.SSLNoVerify {
+		cmd.Env = append(cmd.Env, "GIT_SSL_NO_VERIFY=true")
+	}
+	if tlsConf.SSLCAInfo != "" {
+		cmd.Env = append(cmd.Env, "GIT_SSL_CAINFO="+tlsConf.SSLCAInfo)
+	}
+
+	extraArgs := []string{
+		// Unset credential helper because the command is non-interactive.
+		"-c", "credential.helper=",
+	}
+
+	if len(cmd.Args) > 1 && cmd.Args[1] != "ls-remote" {
+		// Use Git protocol version 2 for all commands except for ls-remote because it actually decreases the performance of ls-remote.
+		// https://opensource.googleblog.com/2018/05/introducing-git-protocol-version-2.html
+		extraArgs = append(extraArgs, "-c", "protocol.version=2")
+	}
+
+	cmd.Args = append(cmd.Args[:1], append(extraArgs, cmd.Args[1:]...)...)
+}
+
+// writeTempFile writes data to the TempFile with pattern. Returns the path of
+// the tempfile.
+func writeTempFile(pattern string, data []byte) (path string, err error) {
+	f, err := ioutil.TempFile("", pattern)
+	if err != nil {
+		return "", err
+	}
+
+	defer func() {
+		if err1 := f.Close(); err == nil {
+			err = err1
+		}
+		// Cleanup if we fail to write
+		if err != nil {
+			path = ""
+			os.Remove(f.Name())
+		}
+	}()
+
+	n, err := f.Write(data)
+	if err == nil && n < len(data) {
+		return "", io.ErrShortWrite
+	}
+
+	return f.Name(), err
+}
+
 // repoCloned checks if dir or `${dir}/.git` is a valid GIT_DIR.
-var repoCloned = func(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, "HEAD")); !os.IsNotExist(err) {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".git", "HEAD")); !os.IsNotExist(err) {
-		return true
-	}
-	return false
+var repoCloned = func(dir GitDir) bool {
+	_, err := os.Stat(dir.Path("HEAD"))
+	return !os.IsNotExist(err)
 }
 
 // repoLastFetched returns the mtime of the repo's FETCH_HEAD, which is the date of the last successful `git remote
@@ -84,16 +220,10 @@ var repoCloned = func(dir string) bool {
 // none of those other two operations have been run (and so FETCH_HEAD does not exist), it will return the mtime of HEAD.
 //
 // This breaks on file systems that do not record mtime and if Git ever changes this undocumented behavior.
-var repoLastFetched = func(dir string) (time.Time, error) {
-	fi, err := os.Stat(filepath.Join(dir, "FETCH_HEAD"))
+var repoLastFetched = func(dir GitDir) (time.Time, error) {
+	fi, err := os.Stat(dir.Path("FETCH_HEAD"))
 	if os.IsNotExist(err) {
-		fi, err = os.Stat(filepath.Join(dir, ".git", "FETCH_HEAD"))
-	}
-	if os.IsNotExist(err) {
-		fi, err = os.Stat(filepath.Join(dir, "HEAD"))
-	}
-	if os.IsNotExist(err) {
-		fi, err = os.Stat(filepath.Join(dir, ".git", "HEAD"))
+		fi, err = os.Stat(dir.Path("HEAD"))
 	}
 	if err != nil {
 		return time.Time{}, err
@@ -111,11 +241,8 @@ var repoLastFetched = func(dir string) (time.Time, error) {
 //
 // As a special case, tries both the directory given, and the .git subdirectory,
 // because we're a bit inconsistent about which name to use.
-var repoLastChanged = func(dir string) (time.Time, error) {
-	fi, err := os.Stat(filepath.Join(dir, "sg_refhash"))
-	if os.IsNotExist(err) {
-		fi, err = os.Stat(filepath.Join(dir, ".git", "sg_refhash"))
-	}
+var repoLastChanged = func(dir GitDir) (time.Time, error) {
+	fi, err := os.Stat(dir.Path("sg_refhash"))
 	if os.IsNotExist(err) {
 		return repoLastFetched(dir)
 	}
@@ -128,12 +255,12 @@ var repoLastChanged = func(dir string) (time.Time, error) {
 // repoRemoteURL returns the "origin" remote fetch URL for the Git repository in dir. If the repository
 // doesn't exist or the remote doesn't exist and have a fetch URL, an error is returned. If there are
 // multiple fetch URLs, only the first is returned.
-var repoRemoteURL = func(ctx context.Context, dir string) (string, error) {
+var repoRemoteURL = func(ctx context.Context, dir GitDir) (string, error) {
 	// We do not pass in context since this command is quick. We do a lot of
 	// logging around what this function does, so having to handle context
 	// failures in each case is verbose. Rather just prevent that.
 	cmd := exec.Command("git", "remote", "get-url", "origin")
-	cmd.Dir = dir
+	cmd.Dir = string(dir)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -152,7 +279,50 @@ var repoRemoteURL = func(ctx context.Context, dir string) (string, error) {
 	return remoteURLs[0], nil
 }
 
-// writeCounter wraps an io.WriterCloser and keeps track of bytes written.
+// repoRemoteRefs returns a map containing ref + commit pairs from the
+// remote Git repository starting with the specified prefix.
+//
+// The ref prefix `ref/<ref type>/` is stripped away from the returned
+// refs.
+var repoRemoteRefs = func(ctx context.Context, url, prefix string) (map[string]string, error) {
+	// The expected output of this git command is a list of:
+	// <commit hash> <ref name>
+	cmd := exec.Command("git", "ls-remote", url, prefix+"*")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	_, err := runCommand(ctx, cmd)
+	if err != nil {
+		stderr := stderr.Bytes()
+		if len(stderr) > 200 {
+			stderr = stderr[:200]
+		}
+		return nil, fmt.Errorf("git %s failed: %s (%q)", cmd.Args, err, stderr)
+	}
+
+	refs := make(map[string]string)
+	raw := stdout.String()
+	for _, line := range strings.Split(raw, "\n") {
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("git %s failed (invalid output): %s", cmd.Args, line)
+		}
+
+		split := strings.SplitN(fields[1], "/", 3)
+		if len(split) != 3 {
+			return nil, fmt.Errorf("git %s failed (invalid refname): %s", cmd.Args, fields[1])
+		}
+
+		refs[split[2]] = fields[0]
+	}
+	return refs, nil
+}
+
+// writeCounter wraps an io.Writer and keeps track of bytes written.
 type writeCounter struct {
 	w io.Writer
 	// n is the number of bytes written to w
@@ -163,6 +333,30 @@ func (c *writeCounter) Write(p []byte) (n int, err error) {
 	n, err = c.w.Write(p)
 	c.n += int64(n)
 	return
+}
+
+// limitWriter is a io.Writer that writes to an W but discards after N bytes.
+type limitWriter struct {
+	W io.Writer // underling writer
+	N int       // max bytes remaining
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if l.N <= 0 {
+		return len(p), nil
+	}
+	origLen := len(p)
+	if len(p) > l.N {
+		p = p[:l.N]
+	}
+	n, err := l.W.Write(p)
+	l.N -= n
+	if l.N <= 0 {
+		// If we have written limit bytes, then we can include the discarded
+		// part of p in the count.
+		n = origLen
+	}
+	return n, err
 }
 
 // flushingResponseWriter is a http.ResponseWriter that flushes all writes
@@ -176,6 +370,7 @@ type flushingResponseWriter struct {
 	// state.
 	mu      sync.Mutex
 	w       http.ResponseWriter
+	flusher http.Flusher
 	closed  bool
 	doFlush bool
 }
@@ -196,21 +391,8 @@ func newFlushingResponseWriter(w http.ResponseWriter) *flushingResponseWriter {
 		return nil
 	}
 
-	f := &flushingResponseWriter{w: w}
-	go func() {
-		for {
-			time.Sleep(100 * time.Millisecond)
-			f.mu.Lock()
-			if f.closed {
-				f.mu.Unlock()
-				break
-			}
-			if f.doFlush {
-				flusher.Flush()
-			}
-			f.mu.Unlock()
-		}
-	}()
+	f := &flushingResponseWriter{w: w, flusher: flusher}
+	go f.periodicFlush()
 	return f
 }
 
@@ -255,6 +437,21 @@ func (f *flushingResponseWriter) Write(p []byte) (int, error) {
 	}
 	f.mu.Unlock()
 	return n, err
+}
+
+func (f *flushingResponseWriter) periodicFlush() {
+	for {
+		time.Sleep(100 * time.Millisecond)
+		f.mu.Lock()
+		if f.closed {
+			f.mu.Unlock()
+			break
+		}
+		if f.doFlush {
+			f.flusher.Flush()
+		}
+		f.mu.Unlock()
+	}
 }
 
 // Close signals to the flush goroutine to stop.
@@ -370,7 +567,7 @@ func updateFileIfDifferent(path string, content []byte) (bool, error) {
 	}
 
 	// fsync to ensure the disk contents are written. This is important, since
-	// we are not gaurenteed that os.Rename is recorded to disk after f's
+	// we are not guaranteed that os.Rename is recorded to disk after f's
 	// contents.
 	if err := f.Sync(); err != nil {
 		f.Close()
@@ -379,5 +576,53 @@ func updateFileIfDifferent(path string, content []byte) (bool, error) {
 	if err := f.Close(); err != nil {
 		return false, err
 	}
-	return true, os.Rename(f.Name(), path)
+	return true, renameAndSync(f.Name(), path)
+}
+
+// renameAndSync will do an os.Rename followed by fsync to ensure the rename
+// is recorded
+func renameAndSync(oldpath, newpath string) error {
+	err := os.Rename(oldpath, newpath)
+	if err != nil {
+		return err
+	}
+
+	oldparent, newparent := filepath.Dir(oldpath), filepath.Dir(newpath)
+	err = fsync(newparent)
+	if oldparent != newparent {
+		if err1 := fsync(oldparent); err == nil {
+			err = err1
+		}
+	}
+	return err
+}
+
+func fsync(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	if err1 := f.Close(); err == nil {
+		err = err1
+	}
+	return err
+}
+
+// bestEffortWalk is a filepath.Walk which ignores errors that can be passed
+// to walkFn. This is a common pattern used in gitserver for best effort work.
+//
+// Note: We still respect errors returned by walkFn.
+//
+// filepath.Walk can return errors if we run into permission errors or a file
+// disappears between readdir and the stat of the file. In either case this
+// error can be ignored for best effort code.
+func bestEffortWalk(root string, walkFn func(path string, info os.FileInfo) error) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		return walkFn(path, info)
+	})
 }

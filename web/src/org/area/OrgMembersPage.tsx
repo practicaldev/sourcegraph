@@ -1,4 +1,3 @@
-import { upperFirst } from 'lodash'
 import * as React from 'react'
 import { RouteComponentProps } from 'react-router'
 import { Link } from 'react-router-dom'
@@ -15,6 +14,8 @@ import { userURL } from '../../user'
 import { removeUserFromOrganization } from '../backend'
 import { InviteForm } from '../invite/InviteForm'
 import { OrgAreaPageProps } from './OrgArea'
+import { ErrorAlert } from '../../components/alerts'
+import * as H from 'history'
 
 interface UserNodeProps {
     /** The user to display in this list item. */
@@ -28,6 +29,7 @@ interface UserNodeProps {
 
     /** Called when the user is updated by an action in this list item. */
     onDidUpdate?: () => void
+    history: H.History
 }
 
 interface UserNodeState {
@@ -101,6 +103,7 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                     <div className="site-admin-detail-list__actions">
                         {this.props.authenticatedUser && this.props.org.viewerCanAdminister && (
                             <button
+                                type="button"
                                 className="btn btn-secondary btn-sm site-admin-detail-list__action"
                                 onClick={this.remove}
                                 disabled={loading}
@@ -111,16 +114,18 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                     </div>
                 </div>
                 {isErrorLike(this.state.removalOrError) && (
-                    <div className="alert alert-danger mt-2">{upperFirst(this.state.removalOrError.message)}</div>
+                    <ErrorAlert className="mt-2" error={this.state.removalOrError} history={this.props.history} />
                 )}
             </li>
         )
     }
 
-    private remove = () => this.removes.next()
+    private remove = (): void => this.removes.next()
 }
 
-interface Props extends OrgAreaPageProps, RouteComponentProps<{}> {}
+interface Props extends OrgAreaPageProps, RouteComponentProps<{}> {
+    history: H.History
+}
 
 interface State {
     /**
@@ -135,7 +140,7 @@ interface State {
  * The organizations members page
  */
 export class OrgMembersPage extends React.PureComponent<Props, State> {
-    private orgChanges = new Subject<GQL.IOrg>()
+    private componentUpdates = new Subject<Props>()
     private userUpdates = new Subject<void>()
     private subscriptions = new Subscription()
 
@@ -145,20 +150,23 @@ export class OrgMembersPage extends React.PureComponent<Props, State> {
     }
 
     public componentDidMount(): void {
-        eventLogger.logViewEvent('OrgMembers', { organization: { org_name: this.props.org.name } })
+        eventLogger.logViewEvent('OrgMembers')
 
         this.subscriptions.add(
-            this.orgChanges.pipe(distinctUntilChanged((a, b) => a.id === b.id)).subscribe(org => {
-                this.setState({ viewerCanAdminister: org.viewerCanAdminister })
-                this.userUpdates.next()
-            })
+            this.componentUpdates
+                .pipe(
+                    map(props => props.org),
+                    distinctUntilChanged((a, b) => a.id === b.id)
+                )
+                .subscribe(org => {
+                    this.setState({ viewerCanAdminister: org.viewerCanAdminister })
+                    this.userUpdates.next()
+                })
         )
     }
 
-    public componentWillReceiveProps(props: Props): void {
-        if (props.org !== this.props.org) {
-            this.orgChanges.next(props.org)
-        }
+    public componentDidUpdate(): void {
+        this.componentUpdates.next(this.props)
     }
 
     public componentWillUnmount(): void {
@@ -166,10 +174,11 @@ export class OrgMembersPage extends React.PureComponent<Props, State> {
     }
 
     public render(): JSX.Element | null {
-        const nodeProps: Pick<UserNodeProps, 'org' | 'authenticatedUser' | 'onDidUpdate'> = {
+        const nodeProps: Omit<UserNodeProps, 'node'> = {
             org: { ...this.props.org, viewerCanAdminister: this.state.viewerCanAdminister },
             authenticatedUser: this.props.authenticatedUser,
             onDidUpdate: this.onDidUpdateUser,
+            history: this.props.history,
         }
 
         return (
@@ -181,9 +190,10 @@ export class OrgMembersPage extends React.PureComponent<Props, State> {
                         authenticatedUser={this.props.authenticatedUser}
                         onOrganizationUpdate={this.props.onOrganizationUpdate}
                         onDidUpdateOrganizationMembers={this.onDidUpdateOrganizationMembers}
+                        history={this.props.history}
                     />
                 )}
-                <FilteredConnection<GQL.IUser, Pick<UserNodeProps, 'org' | 'authenticatedUser' | 'onDidUpdate'>>
+                <FilteredConnection<GQL.IUser, Omit<UserNodeProps, 'node'>>
                     className="list-group list-group-flush mt-3"
                     noun="member"
                     pluralNoun="members"
@@ -200,9 +210,9 @@ export class OrgMembersPage extends React.PureComponent<Props, State> {
         )
     }
 
-    private onDidUpdateUser = () => this.userUpdates.next()
+    private onDidUpdateUser = (): void => this.userUpdates.next()
 
-    private onDidUpdateOrganizationMembers = () => this.userUpdates.next()
+    private onDidUpdateOrganizationMembers = (): void => this.userUpdates.next()
 
     private fetchOrgMembers = (): Observable<GQL.IUserConnection> =>
         queryGraphQL(

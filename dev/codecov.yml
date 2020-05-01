@@ -1,8 +1,29 @@
 coverage:
   range: 50...75
   status:
-    project: off
-    patch: off
+    project:
+      default:
+        informational: true
+      codeintel:
+        informational: true
+        paths:
+          - cmd/precise-code-intel-*
+          - cmd/symbols
+          - internal/codeintel
+          - enterprise/internal/codeintel
+      typescript:
+        informational: true
+        flags:
+          - typescript
+      go:
+        informational: true
+        flags:
+          - go
+    patch:
+      default:
+        target: 5%
 comment:
   require_changes: yes
-  layout: files
+  layout: 'diff, flags, files'
+ignore:
+  - '**/bindata.go'

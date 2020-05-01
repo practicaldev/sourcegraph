@@ -24,10 +24,6 @@ export class ToggleRenderedFileMode extends React.PureComponent<Props> {
         const q = new URLSearchParams(location.search)
 
         if (!q.has(ToggleRenderedFileMode.URL_QUERY_PARAM)) {
-            const isDiscussions = new URLSearchParams(location.hash).get('tab') === 'discussions'
-            if (isDiscussions) {
-                return 'code'
-            }
             return undefined
         }
         return q.get(ToggleRenderedFileMode.URL_QUERY_PARAM) === 'code' ? 'code' : 'rendered' // default to rendered
@@ -36,14 +32,14 @@ export class ToggleRenderedFileMode extends React.PureComponent<Props> {
     /**
      * Returns the URL that displays the blob using the specified mode.
      */
-    private static getURLForMode(location: H.Location, mode: RenderMode): { search: string } {
+    private getURLForMode(location: H.Location, mode: RenderMode): H.Location {
         const q = new URLSearchParams(location.search)
         if (mode === 'code') {
             q.set(ToggleRenderedFileMode.URL_QUERY_PARAM, mode)
         } else {
             q.delete(ToggleRenderedFileMode.URL_QUERY_PARAM)
         }
-        return { search: q.toString() }
+        return { ...location, search: q.toString() }
     }
 
     public componentDidUpdate(prevProps: Props): void {
@@ -57,7 +53,7 @@ export class ToggleRenderedFileMode extends React.PureComponent<Props> {
 
         return (
             <LinkOrButton
-                to={ToggleRenderedFileMode.getURLForMode(this.props.location, otherMode)}
+                to={this.getURLForMode(this.props.location, otherMode)}
                 data-tooltip={otherMode === 'code' ? 'Show raw code file' : 'Show formatted file'}
             >
                 <EyeIcon className="icon-inline" />{' '}

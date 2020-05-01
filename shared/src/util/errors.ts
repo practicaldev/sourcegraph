@@ -1,31 +1,41 @@
 export interface ErrorLike {
     message: string
-    code?: string
+    name?: string
 }
 
-export const isErrorLike = (val: any): val is ErrorLike =>
-    !!val && typeof val === 'object' && (!!val.stack || ('message' in val || 'code' in val)) && !('__typename' in val)
+export const isErrorLike = (val: unknown): val is ErrorLike =>
+    typeof val === 'object' && val !== null && ('stack' in val || 'message' in val) && !('__typename' in val)
 
 /**
- * Ensures a value is a proper Error, copying all properties if needed
+ * Converts an ErrorLike to a proper Error if needed, copying all properties
+ *
+ * @param value An Error, object with ErrorLike properties, or other value.
  */
-export const asError = (err: any): Error => {
-    if (err instanceof Error) {
-        return err
+export const asError = (value: unknown): Error => {
+    if (value instanceof Error) {
+        return value
     }
-    if (typeof err === 'object' && err !== null) {
-        return Object.assign(new Error(err.message), err)
+    if (isErrorLike(value)) {
+        return Object.assign(new Error(value.message), value)
     }
-    return new Error(err)
+    return new Error(String(value))
 }
+
+const AGGREGATE_ERROR_NAME = 'AggregateError'
 
 /**
  * An Error that aggregates multiple errors
  */
 interface AggregateError extends Error {
-    name: 'AggregateError'
+    name: typeof AGGREGATE_ERROR_NAME
     errors: Error[]
 }
+
+/**
+ * A type guard checking whether the given value is an {@link AggregateError}
+ */
+export const isAggregateError = (value: unknown): value is AggregateError =>
+    isErrorLike(value) && value.name === AGGREGATE_ERROR_NAME
 
 /**
  * DEPRECATED: use dataOrThrowErrors instead
@@ -33,27 +43,21 @@ interface AggregateError extends Error {
  *
  * @param errors The errors or ErrorLikes to aggregate
  */
-export const createAggregateError = (errors: ErrorLike[] = []): AggregateError =>
-    Object.assign(new Error(errors.map(e => e.message).join('\n')), {
-        name: 'AggregateError' as 'AggregateError',
-        errors: errors.map(asError),
-    })
+export const createAggregateError = (errors: ErrorLike[] = []): Error =>
+    errors.length === 1
+        ? asError(errors[0])
+        : Object.assign(new Error(errors.map(e => e.message).join('\n')), {
+              name: AGGREGATE_ERROR_NAME,
+              errors: errors.map(asError),
+          })
 
 /**
- * Improves error messages in case of ajax errors
+ * Run the passed function and return `undefined` if it throws an error.
  */
-export const normalizeAjaxError = (err: any): void => {
-    if (!err) {
-        return
-    }
-    if (typeof err.status === 'number') {
-        if (err.status === 0) {
-            err.message = 'Unable to reach server. Check your network connection and try again in a moment.'
-        } else {
-            err.message = `Unexpected HTTP error: ${err.status}`
-            if (err.xhr && err.xhr.statusText) {
-                err.message += ` ${err.xhr.statusText}`
-            }
-        }
+export function tryCatch<T>(fn: () => T): T | undefined {
+    try {
+        return fn()
+    } catch {
+        return undefined
     }
 }

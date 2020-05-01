@@ -25,9 +25,7 @@ interface SurveyResponseNodeProps {
     node: GQL.ISurveyResponse
 }
 
-interface SurveyResponseNodeState {
-    loading: boolean
-}
+interface SurveyResponseNodeState {}
 
 function scoreToClassSuffix(score: number): string {
     return score > 8 ? 'success' : score > 6 ? 'info' : 'danger'
@@ -43,9 +41,7 @@ const ScoreBadge: React.FunctionComponent<{ score: number }> = props => (
 )
 
 class SurveyResponseNode extends React.PureComponent<SurveyResponseNodeProps, SurveyResponseNodeState> {
-    public state: SurveyResponseNodeState = {
-        loading: false,
-    }
+    public state: SurveyResponseNodeState = {}
 
     public render(): JSX.Element | null {
         return (
@@ -108,17 +104,15 @@ interface UserSurveyResponseNodeProps {
 }
 
 interface UserSurveyResponseNodeState {
-    loading: boolean
     displayAll: boolean
 }
 
 class UserSurveyResponseNode extends React.PureComponent<UserSurveyResponseNodeProps, UserSurveyResponseNodeState> {
     public state: UserSurveyResponseNodeState = {
-        loading: false,
         displayAll: false,
     }
 
-    private showMoreClicked = () => this.setState(state => ({ displayAll: !state.displayAll }))
+    private showMoreClicked = (): void => this.setState(state => ({ displayAll: !state.displayAll }))
 
     public render(): JSX.Element | null {
         const responses = this.props.node.surveyResponses
@@ -149,7 +143,7 @@ class UserSurveyResponseNode extends React.PureComponent<UserSurveyResponseNodeP
                     </td>
                     <td>
                         {responses.length > 0 && (
-                            <button className="btn btn-sm btn-secondary" onClick={this.showMoreClicked}>
+                            <button type="button" className="btn btn-sm btn-secondary" onClick={this.showMoreClicked}>
                                 {this.state.displayAll ? 'Hide' : 'See all'}
                             </button>
                         )}
@@ -258,13 +252,11 @@ class SiteAdminSurveyResponsesSummary extends React.PureComponent<{}, SiteAdminS
     }
 }
 
-interface Props extends RouteComponentProps<any> {}
+interface Props extends RouteComponentProps<{}> {}
 
 type surveyResultsDisplays = 'chronological' | 'by-user'
 
-interface State {
-    tab: surveyResultsDisplays
-}
+interface State {}
 
 class FilteredSurveyResponseConnection extends FilteredConnection<GQL.ISurveyResponse, {}> {}
 class FilteredUserSurveyResponseConnection extends FilteredConnection<GQL.IUser, {}> {}
@@ -273,7 +265,7 @@ class FilteredUserSurveyResponseConnection extends FilteredConnection<GQL.IUser,
  * A page displaying the survey responses on this site.
  */
 export class SiteAdminSurveyResponsesPage extends React.Component<Props, State> {
-    public state: State = { tab: 'chronological' }
+    public state: State = {}
     private static TABS: Tab<surveyResultsDisplays>[] = [
         { id: 'chronological', label: 'Chronological feed' },
         { id: 'by-user', label: 'Sort by user' },
@@ -284,15 +276,11 @@ export class SiteAdminSurveyResponsesPage extends React.Component<Props, State> 
         eventLogger.logViewEvent('SiteAdminSurveyResponses')
     }
 
-    private tabSelected = (tab: surveyResultsDisplays) => this.setState({ tab })
-
     public render(): JSX.Element | null {
         return (
             <div className="site-admin-survey-responses-page">
-                <PageTitle title="Survey Responses - Admin" />
-                <div className="d-flex justify-content-between align-items-center mt-3 mb-1">
-                    <h2 className="mb-0">Survey responses</h2>
-                </div>
+                <PageTitle title="User feedback survey - Admin" />
+                <h2>User feedback survey</h2>
                 <p>
                     After using Sourcegraph for a few days, users are presented with a request to answer "How likely is
                     it that you would recommend Sourcegraph to a friend?" on a scale from 0–10 and to provide some
@@ -307,7 +295,6 @@ export class SiteAdminSurveyResponsesPage extends React.Component<Props, State> 
                     tabs={SiteAdminSurveyResponsesPage.TABS}
                     storageKey={SiteAdminSurveyResponsesPage.LAST_TAB_STORAGE_KEY}
                     tabClassName="tab-bar__tab--h5like"
-                    onSelectTab={this.tabSelected}
                 >
                     <FilteredSurveyResponseConnection
                         key="chronological"

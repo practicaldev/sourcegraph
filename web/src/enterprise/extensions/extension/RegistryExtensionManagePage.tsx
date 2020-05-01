@@ -1,5 +1,4 @@
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import { upperFirst } from 'lodash'
 import AlertCircleIcon from 'mdi-react/AlertCircleIcon'
 import * as React from 'react'
 import { RouteComponentProps } from 'react-router'
@@ -19,6 +18,8 @@ import { ExtensionAreaRouteContext } from '../../../extensions/extension/Extensi
 import { eventLogger } from '../../../tracking/eventLogger'
 import { RegistryExtensionDeleteButton } from './RegistryExtensionDeleteButton'
 import { RegistryExtensionNameFormGroup, RegistryPublisherFormGroup } from './RegistryExtensionForm'
+import { ErrorAlert } from '../../../components/alerts'
+import * as H from 'history'
 
 function updateExtension(
     args: Pick<
@@ -56,6 +57,7 @@ function updateExtension(
 
 interface Props extends ExtensionAreaRouteContext, RouteComponentProps<{}> {
     authenticatedUser: GQL.IUser
+    history: H.History
 }
 
 interface State {
@@ -101,14 +103,17 @@ export const RegistryExtensionManagePage = withAuthenticatedUser(
                             )
                         )
                     )
-                    .subscribe(stateUpdate => this.setState(stateUpdate as State), err => console.error(err))
+                    .subscribe(
+                        stateUpdate => this.setState(stateUpdate as State),
+                        err => console.error(err)
+                    )
             )
 
             this.componentUpdates.next(this.props)
         }
 
-        public componentWillReceiveProps(nextProps: Props): void {
-            this.componentUpdates.next(nextProps)
+        public componentDidUpdate(): void {
+            this.componentUpdates.next(this.props)
         }
 
         public componentWillUnmount(): void {
@@ -149,6 +154,7 @@ export const RegistryExtensionManagePage = withAuthenticatedUser(
                             value={publisher.id}
                             publishersOrError={[publisher]}
                             disabled={true}
+                            history={this.props.history}
                         />
                         <RegistryExtensionNameFormGroup
                             className="registry-extension-manage-page__input"
@@ -179,7 +185,7 @@ export const RegistryExtensionManagePage = withAuthenticatedUser(
                         </button>
                     </Form>
                     {isErrorLike(this.state.updateOrError) && (
-                        <div className="alert alert-danger">{upperFirst(this.state.updateOrError.message)}</div>
+                        <ErrorAlert error={this.state.updateOrError} history={this.props.history} />
                     )}
                     <div className="card mt-5 registry-extension-manage-page__other-actions">
                         <div className="card-header">Other actions</div>
@@ -205,7 +211,7 @@ export const RegistryExtensionManagePage = withAuthenticatedUser(
 
         private onSubmit: React.FormEventHandler<HTMLFormElement> = e => this.submits.next(e)
 
-        private onDidDelete = () => {
+        private onDidDelete = (): void => {
             this.props.history.push('/extensions')
             this.props.onDidUpdateExtension()
         }

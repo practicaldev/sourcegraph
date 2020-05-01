@@ -1,3 +1,4 @@
+import { parseISO } from 'date-fns'
 import formatDistance from 'date-fns/formatDistance'
 import * as H from 'history'
 import SourceCommitIcon from 'mdi-react/SourceCommitIcon'
@@ -34,31 +35,9 @@ interface Props {
 }
 
 export const CommitSearchResult: React.FunctionComponent<Props> = (props: Props) => {
-    const telemetryData: { [key: string]: any } = {
-        preview_type: props.result.diffPreview ? 'diff' : 'message',
+    const logClick = (): void => {
+        eventLogger.log('CommitSearchResultClicked')
     }
-    const logClickOnPerson = () =>
-        eventLogger.log('CommitSearchResultClicked', { commit_search_result: { ...telemetryData, target: 'person' } })
-    const logClickOnMessage = () =>
-        eventLogger.log('CommitSearchResultClicked', {
-            commit_search_result: { ...telemetryData, target: 'message' },
-        })
-    const logClickOnTag = () =>
-        eventLogger.log('CommitSearchResultClicked', {
-            commit_search_result: { ...telemetryData, target: 'tag' },
-        })
-    const logClickOnCommitID = () =>
-        eventLogger.log('CommitSearchResultClicked', {
-            commit_search_result: { ...telemetryData, target: 'commit-id' },
-        })
-    const logClickOnTimestamp = () =>
-        eventLogger.log('CommitSearchResultClicked', {
-            commit_search_result: { ...telemetryData, target: 'timestamp' },
-        })
-    const logClickOnText = () =>
-        eventLogger.log('CommitSearchResultClicked', {
-            commit_search_result: { ...telemetryData, target: 'text' },
-        })
 
     const title: React.ReactChild = (
         <div className="commit-search-result__title">
@@ -74,38 +53,34 @@ export const CommitSearchResult: React.FunctionComponent<Props> = (props: Props)
                 to={props.result.commit.url}
                 className="commit-search-result__title-person"
                 onClick={stopPropagationToCollapseOrExpand}
-                onMouseDown={logClickOnPerson}
+                onMouseDown={logClick}
             >
-                <UserAvatar user={props.result.commit.author.person!} size={32} className="mr-1 icon-inline" />
-                {props.result.commit.author.person!.displayName}
+                <UserAvatar user={props.result.commit.author.person} size={32} className="mr-1 icon-inline" />
+                {props.result.commit.author.person.displayName}
             </Link>
             <Link
                 to={props.result.commit.url}
                 className="commit-search-result__title-message"
                 onClick={stopPropagationToCollapseOrExpand}
-                onMouseDown={logClickOnMessage}
+                onMouseDown={logClick}
             >
                 {commitMessageSubject(props.result.commit.message) || '(empty commit message)'}
             </Link>
             <span className="commit-search-result__title-signature">
                 {uniqueRefs([...props.result.refs, ...props.result.sourceRefs]).map((ref, i) => (
-                    <GitRefTag key={i} gitRef={ref} onMouseDown={logClickOnTag} />
+                    <GitRefTag key={i} gitRef={ref} onMouseDown={logClick} />
                 ))}
                 <code>
                     <Link
                         to={props.result.commit.url}
                         onClick={stopPropagationToCollapseOrExpand}
-                        onMouseDown={logClickOnCommitID}
+                        onMouseDown={logClick}
                     >
                         {props.result.commit.abbreviatedOID}
                     </Link>
                 </code>{' '}
-                <Link
-                    to={props.result.commit.url}
-                    onClick={stopPropagationToCollapseOrExpand}
-                    onMouseDown={logClickOnTimestamp}
-                >
-                    {formatDistance(props.result.commit.author.date, new Date(), {
+                <Link to={props.result.commit.url} onClick={stopPropagationToCollapseOrExpand} onMouseDown={logClick}>
+                    {formatDistance(parseISO(props.result.commit.author.date), new Date(), {
                         addSuffix: true,
                     })}
                 </Link>
@@ -123,7 +98,7 @@ export const CommitSearchResult: React.FunctionComponent<Props> = (props: Props)
                 value={props.result.messagePreview.value.split('\n')}
                 highlights={props.result.messagePreview.highlights}
                 lineClasses={[{ line: 1, className: 'strong' }]}
-                onMouseDown={logClickOnText}
+                onMouseDown={logClick}
             />
         )
     }
@@ -159,9 +134,8 @@ export const CommitSearchResult: React.FunctionComponent<Props> = (props: Props)
             if (ignoreUntilAtAt && !line.startsWith('@@')) {
                 lineClasses.push({ line: i + 1, className: 'hidden' })
                 continue
-            } else {
-                ignoreUntilAtAt = false
             }
+            ignoreUntilAtAt = false
             if (line.startsWith('diff ')) {
                 ignoreUntilAtAt = true
 
@@ -227,7 +201,7 @@ export const CommitSearchResult: React.FunctionComponent<Props> = (props: Props)
                 value={lines}
                 highlights={props.result.diffPreview.highlights}
                 lineClasses={lineClasses}
-                onMouseDown={logClickOnText}
+                onMouseDown={logClick}
             />
         )
     }
@@ -248,7 +222,7 @@ function commitMessageSubject(message: string): string {
     return eol === -1 ? message : message.slice(0, eol)
 }
 
-function stopPropagationToCollapseOrExpand(e: React.MouseEvent<any>): void {
+function stopPropagationToCollapseOrExpand(e: React.MouseEvent): void {
     e.stopPropagation()
 }
 

@@ -1,32 +1,63 @@
 import * as H from 'history'
 import * as React from 'react'
-import { parseSearchURLQuery } from '..'
+import {
+    parseSearchURLQuery,
+    PatternTypeProps,
+    InteractiveSearchProps,
+    CaseSensitivityProps,
+    SmartSearchFieldProps,
+} from '..'
 import { ActivationProps } from '../../../../shared/src/components/activation/Activation'
 import * as GQL from '../../../../shared/src/graphql/schema'
 import { isSettingsValid, SettingsCascadeProps } from '../../../../shared/src/settings/settings'
 import { Form } from '../../components/Form'
 import { PageTitle } from '../../components/PageTitle'
 import { Notices } from '../../global/Notices'
-import { Settings } from '../../schema/settings.schema'
-import { ThemePreferenceProps, ThemeProps } from '../../theme'
-import { eventLogger } from '../../tracking/eventLogger'
+import { QuickLink, Settings } from '../../schema/settings.schema'
+import { ThemeProps } from '../../../../shared/src/theme'
+import { eventLogger, EventLoggerProps } from '../../tracking/eventLogger'
+import { ThemePreferenceProps } from '../../theme'
 import { limitString } from '../../util'
-import { queryIndexOfScope, submitSearch } from '../helpers'
-import { QueryBuilder } from './QueryBuilder'
+import { submitSearch, QueryState } from '../helpers'
+import { QuickLinks } from '../QuickLinks'
 import { QueryInput } from './QueryInput'
+import { LazyMonacoQueryInput } from './LazyMonacoQueryInput'
 import { SearchButton } from './SearchButton'
-import { ISearchScope, SearchFilterChips } from './SearchFilterChips'
+import { SearchScopes } from './SearchScopes'
+import { InteractiveModeInput } from './interactive/InteractiveModeInput'
+import { KeyboardShortcutsProps } from '../../keyboardShortcuts/keyboardShortcuts'
+import { ExtensionsControllerProps } from '../../../../shared/src/extensions/controller'
+import { PlatformContextProps } from '../../../../shared/src/platform/context'
+import { SearchModeToggle } from './interactive/SearchModeToggle'
+import { Link } from '../../../../shared/src/components/Link'
+import { BrandLogo } from '../../components/branding/BrandLogo'
 
-interface Props extends SettingsCascadeProps, ThemeProps, ThemePreferenceProps, ActivationProps {
+interface Props
+    extends SettingsCascadeProps,
+        ThemeProps,
+        ThemePreferenceProps,
+        ActivationProps,
+        PatternTypeProps,
+        CaseSensitivityProps,
+        KeyboardShortcutsProps,
+        EventLoggerProps,
+        ExtensionsControllerProps<'executeCommand' | 'services'>,
+        PlatformContextProps<'forceUpdateTooltip' | 'settings'>,
+        InteractiveSearchProps,
+        SmartSearchFieldProps {
     authenticatedUser: GQL.IUser | null
     location: H.Location
     history: H.History
     isSourcegraphDotCom: boolean
+
+    // For NavLinks
+    authRequired?: boolean
+    showCampaigns: boolean
 }
 
 interface State {
-    /** The query value entered by the user in the query input */
-    userQuery: string
+    /** The query cursor position and value entered by the user in the query input */
+    userQueryState: QueryState
     /** The query that results from combining all values in the query builder form. */
     builderQuery: string
 }
@@ -35,136 +66,131 @@ interface State {
  * The search page
  */
 export class SearchPage extends React.Component<Props, State> {
-    private static HIDE_REPOGROUP_SAMPLE_STORAGE_KEY = 'SearchPage/hideRepogroupSample'
-
     constructor(props: Props) {
         super(props)
-
-        const query = parseSearchURLQuery(props.location.search)
+        const queryFromUrl = parseSearchURLQuery(props.location.search) || ''
         this.state = {
-            userQuery: query || '',
+            userQueryState: {
+                query: queryFromUrl,
+                cursorPosition: queryFromUrl.length,
+            },
             builderQuery: '',
         }
     }
 
     public componentDidMount(): void {
         eventLogger.logViewEvent('Home')
-        if (
-            window.context.sourcegraphDotComMode &&
-            !localStorage.getItem(SearchPage.HIDE_REPOGROUP_SAMPLE_STORAGE_KEY) &&
-            !this.state.userQuery
-        ) {
-            this.setState({ userQuery: 'repogroup:sample' })
-        }
     }
 
     public render(): JSX.Element | null {
-        let logoUrl =
-            `${window.context.assetsRoot}/img/sourcegraph` +
-            (this.props.isLightTheme ? '-light' : '') +
-            '-head-logo.svg'
-        const { branding } = window.context
-        if (branding) {
-            if (this.props.isLightTheme) {
-                if (branding.light && branding.light.logo) {
-                    logoUrl = branding.light.logo
-                }
-            } else if (branding.dark && branding.dark.logo) {
-                logoUrl = branding.dark.logo
-            }
-        }
-        const hasScopes = this.getScopes().length > 0
+        const quickLinks = this.getQuickLinks()
         return (
             <div className="search-page">
                 <PageTitle title={this.getPageTitle()} />
-                <img className="search-page__logo" src={logoUrl} />
-                <Form className="search search-page__container" onSubmit={this.onSubmit}>
-                    <div className="search-page__input-container">
-                        <QueryInput
-                            {...this.props}
-                            value={this.state.userQuery}
-                            onChange={this.onUserQueryChange}
-                            autoFocus={'cursor-at-end'}
-                            hasGlobalQueryBehavior={true}
-                        />
-                        <SearchButton activation={this.props.activation} />
+                <BrandLogo className="search-page__logo" isLightTheme={this.props.isLightTheme} />
+                <div className="search search-page__container">
+                    <div className="d-flex flex-row">
+                        {this.props.splitSearchModes && this.props.interactiveSearchMode ? (
+                            <InteractiveModeInput
+                                {...this.props}
+                                navbarSearchState={this.state.userQueryState}
+                                onNavbarQueryChange={this.onUserQueryChange}
+                                toggleSearchMode={this.props.toggleSearchMode}
+                                lowProfile={false}
+                            />
+                        ) : (
+                            <>
+                                <Form className="search flex-grow-1" onSubmit={this.onFormSubmit}>
+                                    <div className="search-page__input-container">
+                                        {this.props.splitSearchModes && (
+                                            <SearchModeToggle
+                                                {...this.props}
+                                                interactiveSearchMode={this.props.interactiveSearchMode}
+                                            />
+                                        )}
+
+                                        {this.props.smartSearchField ? (
+                                            <LazyMonacoQueryInput
+                                                {...this.props}
+                                                hasGlobalQueryBehavior={true}
+                                                queryState={this.state.userQueryState}
+                                                onChange={this.onUserQueryChange}
+                                                onSubmit={this.onSubmit}
+                                                autoFocus={true}
+                                            />
+                                        ) : (
+                                            <QueryInput
+                                                {...this.props}
+                                                value={this.state.userQueryState}
+                                                onChange={this.onUserQueryChange}
+                                                autoFocus="cursor-at-end"
+                                                hasGlobalQueryBehavior={true}
+                                                patternType={this.props.patternType}
+                                                setPatternType={this.props.setPatternType}
+                                                withSearchModeToggle={this.props.splitSearchModes}
+                                            />
+                                        )}
+                                        <SearchButton />
+                                    </div>
+                                    <div className="search-page__input-sub-container">
+                                        {!this.props.splitSearchModes && (
+                                            <Link className="btn btn-link btn-sm pl-0" to="/search/query-builder">
+                                                Query builder
+                                            </Link>
+                                        )}
+                                        <SearchScopes
+                                            history={this.props.history}
+                                            query={this.state.userQueryState.query}
+                                            authenticatedUser={this.props.authenticatedUser}
+                                            settingsCascade={this.props.settingsCascade}
+                                            patternType={this.props.patternType}
+                                        />
+                                    </div>
+                                    <QuickLinks quickLinks={quickLinks} className="search-page__input-sub-container" />
+                                    <Notices
+                                        className="my-3"
+                                        location="home"
+                                        settingsCascade={this.props.settingsCascade}
+                                        history={this.props.history}
+                                    />
+                                </Form>
+                            </>
+                        )}
                     </div>
-                    {hasScopes ? (
-                        <>
-                            <div className="search-page__input-sub-container">
-                                <SearchFilterChips
-                                    location={this.props.location}
-                                    history={this.props.history}
-                                    query={this.state.userQuery}
-                                    authenticatedUser={this.props.authenticatedUser}
-                                    settingsCascade={this.props.settingsCascade}
-                                    isSourcegraphDotCom={this.props.isSourcegraphDotCom}
-                                />
-                            </div>
-                            <QueryBuilder
-                                onFieldsQueryChange={this.onBuilderQueryChange}
-                                isSourcegraphDotCom={window.context.sourcegraphDotComMode}
-                            />
-                        </>
-                    ) : (
-                        <>
-                            <QueryBuilder
-                                onFieldsQueryChange={this.onBuilderQueryChange}
-                                isSourcegraphDotCom={window.context.sourcegraphDotComMode}
-                            />
-                            <div className="search-page__input-sub-container">
-                                <SearchFilterChips
-                                    location={this.props.location}
-                                    history={this.props.history}
-                                    query={this.state.userQuery}
-                                    authenticatedUser={this.props.authenticatedUser}
-                                    settingsCascade={this.props.settingsCascade}
-                                    isSourcegraphDotCom={this.props.isSourcegraphDotCom}
-                                />
-                            </div>
-                        </>
-                    )}
-                    <Notices className="my-3" location="home" settingsCascade={this.props.settingsCascade} />
-                </Form>
+                </div>
             </div>
         )
     }
 
-    private onUserQueryChange = (userQuery: string) => {
-        this.setState({ userQuery })
-
-        if (window.context.sourcegraphDotComMode) {
-            if (queryIndexOfScope(userQuery, 'repogroup:sample') !== -1) {
-                localStorage.removeItem(SearchPage.HIDE_REPOGROUP_SAMPLE_STORAGE_KEY)
-            } else {
-                localStorage.setItem(SearchPage.HIDE_REPOGROUP_SAMPLE_STORAGE_KEY, 'true')
-            }
-        }
+    private onUserQueryChange = (userQueryState: QueryState): void => {
+        this.setState({ userQueryState })
     }
 
-    private onBuilderQueryChange = (builderQuery: string) => {
-        this.setState({ builderQuery })
+    private onSubmit = (): void => {
+        const query = [this.state.builderQuery, this.state.userQueryState.query].filter(s => !!s).join(' ')
+        submitSearch({
+            ...this.props,
+            query,
+            source: 'home',
+        })
     }
 
-    private onSubmit = (event: React.FormEvent<HTMLFormElement>): void => {
+    private onFormSubmit = (event: React.FormEvent<HTMLFormElement>): void => {
         event.preventDefault()
-        const query = [this.state.builderQuery, this.state.userQuery].filter(s => !!s).join(' ')
-        submitSearch(this.props.history, query, 'home')
+        this.onSubmit()
     }
 
     private getPageTitle(): string | undefined {
         const query = parseSearchURLQuery(this.props.location.search)
         if (query) {
-            return `${limitString(this.state.userQuery, 25, true)}`
+            return `${limitString(this.state.userQueryState.query, 25, true)}`
         }
         return undefined
     }
 
-    private getScopes(): ISearchScope[] {
-        const allScopes: ISearchScope[] =
-            (isSettingsValid<Settings>(this.props.settingsCascade) &&
-                this.props.settingsCascade.final['search.scopes']) ||
-            []
-        return allScopes
+    private getQuickLinks(): QuickLink[] {
+        return (
+            (isSettingsValid<Settings>(this.props.settingsCascade) && this.props.settingsCascade.final.quicklinks) || []
+        )
     }
 }

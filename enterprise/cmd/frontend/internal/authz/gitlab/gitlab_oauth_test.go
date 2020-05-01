@@ -3,26 +3,34 @@ package gitlab
 import (
 	"context"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/authz"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/extsvc"
-	"github.com/sourcegraph/sourcegraph/pkg/extsvc/gitlab"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/gitlab"
 )
 
+// Test_GitLab_RepoPerms checks for correctness and cache-correctness
 func Test_GitLab_RepoPerms(t *testing.T) {
 	type call struct {
 		description string
-		account     *extsvc.ExternalAccount
-		repos       map[authz.Repo]struct{}
-		expPerms    map[api.RepoName]map[authz.Perm]bool
+		account     *extsvc.Account
+		repos       []*types.Repo
+		expPerms    []authz.RepoPerms
 	}
 	type test struct {
 		description string
-		op          GitLabOAuthAuthzProviderOp
-		calls       []call
+
+		// Configures the provider. Do NOT set the MaxBatchRequests and MinBatchThreshold fields in
+		// the test struct declarations, as these are set to a range of values in the test logic,
+		// itself.
+		op OAuthProviderOp
+
+		calls []call
 	}
 
 	// Mock the following scenario:
@@ -70,88 +78,97 @@ func Test_GitLab_RepoPerms(t *testing.T) {
 		},
 	})
 	gitlab.MockGetProject = gitlabMock.GetProject
+	gitlab.MockListProjects = gitlabMock.ListProjects
 	gitlab.MockListTree = gitlabMock.ListTree
+
+	repos := map[string]*types.Repo{
+		"u1/repo1":       repo("u1/repo1", gitlab.ServiceType, "https://gitlab.mine/", "10"),
+		"u2/repo1":       repo("u2/repo1", gitlab.ServiceType, "https://gitlab.mine/", "20"),
+		"u3/repo1":       repo("u3/repo1", gitlab.ServiceType, "https://gitlab.mine/", "30"),
+		"internal/repo1": repo("internal/repo1", gitlab.ServiceType, "https://gitlab.mine/", "981"),
+		"public/repo1":   repo("public/repo1", gitlab.ServiceType, "https://gitlab.mine/", "991"),
+	}
 
 	tests := []test{
 		{
 			description: "standard config",
-			op: GitLabOAuthAuthzProviderOp{
+			op: OAuthProviderOp{
 				BaseURL: mustURL(t, "https://gitlab.mine"),
 			},
 			calls: []call{
 				{
 					description: "u1 user has expected perms",
 					account:     acct(t, 1, "gitlab", "https://gitlab.mine/", "1", "oauth-u1"),
-					repos: map[authz.Repo]struct{}{
-						repo("u1/repo1", gitlab.ServiceType, "https://gitlab.mine/", "10"):        {},
-						repo("u2/repo1", gitlab.ServiceType, "https://gitlab.mine/", "20"):        {},
-						repo("u3/repo1", gitlab.ServiceType, "https://gitlab.mine/", "30"):        {},
-						repo("internal/repo1", gitlab.ServiceType, "https://gitlab.mine/", "981"): {},
-						repo("public/repo1", gitlab.ServiceType, "https://gitlab.mine/", "991"):   {},
+					repos: []*types.Repo{
+						repos["u1/repo1"],
+						repos["u2/repo1"],
+						repos["u3/repo1"],
+						repos["internal/repo1"],
+						repos["public/repo1"],
 					},
-					expPerms: map[api.RepoName]map[authz.Perm]bool{
-						"u1/repo1":       {authz.Read: true},
-						"internal/repo1": {authz.Read: true},
-						"public/repo1":   {authz.Read: true},
+					expPerms: []authz.RepoPerms{
+						{Repo: repos["u1/repo1"], Perms: authz.Read},
+						{Repo: repos["internal/repo1"], Perms: authz.Read},
+						{Repo: repos["public/repo1"], Perms: authz.Read},
 					},
 				},
 				{
 					description: "u2 user has expected perms",
 					account:     acct(t, 2, "gitlab", "https://gitlab.mine/", "2", "oauth-u2"),
-					repos: map[authz.Repo]struct{}{
-						repo("u1/repo1", gitlab.ServiceType, "https://gitlab.mine/", "10"):        {},
-						repo("u2/repo1", gitlab.ServiceType, "https://gitlab.mine/", "20"):        {},
-						repo("u3/repo1", gitlab.ServiceType, "https://gitlab.mine/", "30"):        {},
-						repo("internal/repo1", gitlab.ServiceType, "https://gitlab.mine/", "981"): {},
-						repo("public/repo1", gitlab.ServiceType, "https://gitlab.mine/", "991"):   {},
+					repos: []*types.Repo{
+						repos["u1/repo1"],
+						repos["u2/repo1"],
+						repos["u3/repo1"],
+						repos["internal/repo1"],
+						repos["public/repo1"],
 					},
-					expPerms: map[api.RepoName]map[authz.Perm]bool{
-						"u2/repo1":       {authz.Read: true},
-						"internal/repo1": {authz.Read: true},
-						"public/repo1":   {authz.Read: true},
+					expPerms: []authz.RepoPerms{
+						{Repo: repos["u2/repo1"], Perms: authz.Read},
+						{Repo: repos["internal/repo1"], Perms: authz.Read},
+						{Repo: repos["public/repo1"], Perms: authz.Read},
 					},
 				},
 				{
 					description: "other user has expected perms (internal and public)",
 					account:     acct(t, 4, "gitlab", "https://gitlab.mine/", "555", "oauth-other"),
-					repos: map[authz.Repo]struct{}{
-						repo("u1/repo1", gitlab.ServiceType, "https://gitlab.mine/", "10"):        {},
-						repo("u2/repo1", gitlab.ServiceType, "https://gitlab.mine/", "20"):        {},
-						repo("u3/repo1", gitlab.ServiceType, "https://gitlab.mine/", "30"):        {},
-						repo("internal/repo1", gitlab.ServiceType, "https://gitlab.mine/", "981"): {},
-						repo("public/repo1", gitlab.ServiceType, "https://gitlab.mine/", "991"):   {},
+					repos: []*types.Repo{
+						repos["u1/repo1"],
+						repos["u2/repo1"],
+						repos["u3/repo1"],
+						repos["internal/repo1"],
+						repos["public/repo1"],
 					},
-					expPerms: map[api.RepoName]map[authz.Perm]bool{
-						"internal/repo1": {authz.Read: true},
-						"public/repo1":   {authz.Read: true},
+					expPerms: []authz.RepoPerms{
+						{Repo: repos["internal/repo1"], Perms: authz.Read},
+						{Repo: repos["public/repo1"], Perms: authz.Read},
 					},
 				},
 				{
 					description: "no token means only public repos",
 					account:     acct(t, 4, "gitlab", "https://gitlab.mine/", "555", ""),
-					repos: map[authz.Repo]struct{}{
-						repo("u1/repo1", gitlab.ServiceType, "https://gitlab.mine/", "10"):        {},
-						repo("u2/repo1", gitlab.ServiceType, "https://gitlab.mine/", "20"):        {},
-						repo("u3/repo1", gitlab.ServiceType, "https://gitlab.mine/", "30"):        {},
-						repo("internal/repo1", gitlab.ServiceType, "https://gitlab.mine/", "981"): {},
-						repo("public/repo1", gitlab.ServiceType, "https://gitlab.mine/", "991"):   {},
+					repos: []*types.Repo{
+						repos["u1/repo1"],
+						repos["u2/repo1"],
+						repos["u3/repo1"],
+						repos["internal/repo1"],
+						repos["public/repo1"],
 					},
-					expPerms: map[api.RepoName]map[authz.Perm]bool{
-						"public/repo1": {authz.Read: true},
+					expPerms: []authz.RepoPerms{
+						{Repo: repos["public/repo1"], Perms: authz.Read},
 					},
 				},
 				{
 					description: "unauthenticated means only public repos",
 					account:     nil,
-					repos: map[authz.Repo]struct{}{
-						repo("u1/repo1", gitlab.ServiceType, "https://gitlab.mine/", "10"):        {},
-						repo("u2/repo1", gitlab.ServiceType, "https://gitlab.mine/", "20"):        {},
-						repo("u3/repo1", gitlab.ServiceType, "https://gitlab.mine/", "30"):        {},
-						repo("internal/repo1", gitlab.ServiceType, "https://gitlab.mine/", "981"): {},
-						repo("public/repo1", gitlab.ServiceType, "https://gitlab.mine/", "991"):   {},
+					repos: []*types.Repo{
+						repos["u1/repo1"],
+						repos["u2/repo1"],
+						repos["u3/repo1"],
+						repos["internal/repo1"],
+						repos["public/repo1"],
 					},
-					expPerms: map[api.RepoName]map[authz.Perm]bool{
-						"public/repo1": {authz.Read: true},
+					expPerms: []authz.RepoPerms{
+						{Repo: repos["public/repo1"], Perms: authz.Read},
 					},
 				},
 			},
@@ -160,23 +177,32 @@ func Test_GitLab_RepoPerms(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.description, func(t *testing.T) {
 			for _, c := range test.calls {
-				t.Logf("Call %q", c.description)
+				for _, batchingThreshold := range [][2]int{
+					{0, 0},     // should NOT trigger batch-fetching visibility
+					{1, 300},   // should trigger batch-fetching visibility
+					{1, 1},     // should trigger batch-fetching visibility, but hit maximum
+					{200, 300}, // should NOT trigger batch-fetching visibility
+				} {
+					t.Logf("Call %q, batchingThreshold %d", c.description, batchingThreshold)
 
-				// Recreate the authz provider cache every time, before running twice (once uncached, once cached)
-				ctx := context.Background()
-				op := test.op
-				op.MockCache = make(mockCache)
-				authzProvider := NewOAuthProvider(op)
-
-				for i := 0; i < 2; i++ {
-					t.Logf("iter %d", i)
-					perms, err := authzProvider.RepoPerms(ctx, c.account, c.repos)
-					if err != nil {
-						t.Errorf("unexpected error: %v", err)
-						continue
-					}
-					if !reflect.DeepEqual(perms, c.expPerms) {
-						t.Errorf("expected %s, but got %s", asJSON(t, c.expPerms), asJSON(t, perms))
+					// Recreate the authz provider cache every time, before running twice (once uncached, once cached)
+					ctx := context.Background()
+					op := test.op
+					op.MinBatchThreshold, op.MaxBatchRequests = batchingThreshold[0], batchingThreshold[1]
+					op.MockCache = make(mockCache)
+					authzProvider := newOAuthProvider(op, nil)
+					for i := 0; i < 2; i++ {
+						t.Logf("iter %d", i)
+						perms, err := authzProvider.RepoPerms(ctx, c.account, c.repos)
+						if err != nil {
+							t.Errorf("unexpected error: %v", err)
+							continue
+						}
+						sort.Sort(authz.RepoPermsSort(perms))
+						sort.Sort(authz.RepoPermsSort(c.expPerms))
+						if diff := cmp.Diff(perms, c.expPerms); diff != "" {
+							t.Errorf("perms != c.expPerms:\n%s", diff)
+						}
 					}
 				}
 			}
@@ -184,6 +210,7 @@ func Test_GitLab_RepoPerms(t *testing.T) {
 	}
 }
 
+// Test_GitLab_RepoPerms_cache tests for cache-effectiveness (we cache what we expect to cache).
 func Test_GitLab_RepoPerms_cache(t *testing.T) {
 	gitlabMock := newMockGitLab(mockGitLabOp{
 		t: t,
@@ -213,17 +240,17 @@ func Test_GitLab_RepoPerms_cache(t *testing.T) {
 	gitlab.MockListTree = gitlabMock.ListTree
 
 	ctx := context.Background()
-	authzProvider := NewOAuthProvider(GitLabOAuthAuthzProviderOp{
+	authzProvider := newOAuthProvider(OAuthProviderOp{
 		BaseURL:   mustURL(t, "https://gitlab.mine"),
 		MockCache: make(mockCache),
 		CacheTTL:  3 * time.Hour,
-	})
+	}, nil)
 
 	// Initial request for private repo
 	if _, err := authzProvider.RepoPerms(ctx,
 		acct(t, 1, gitlab.ServiceType, "https://gitlab.mine/", "1", "oauth-u1"),
-		map[authz.Repo]struct{}{
-			repo("10", "gitlab", "https://gitlab.mine/", "10"): {},
+		[]*types.Repo{
+			repo("10", "gitlab", "https://gitlab.mine/", "10"),
 		},
 	); err != nil {
 		t.Fatal(err)
@@ -242,8 +269,8 @@ func Test_GitLab_RepoPerms_cache(t *testing.T) {
 	// Exact same request
 	if _, err := authzProvider.RepoPerms(ctx,
 		acct(t, 1, gitlab.ServiceType, "https://gitlab.mine/", "1", "oauth-u1"),
-		map[authz.Repo]struct{}{
-			repo("10", "gitlab", "https://gitlab.mine/", "10"): {},
+		[]*types.Repo{
+			repo("10", "gitlab", "https://gitlab.mine/", "10"),
 		},
 	); err != nil {
 		t.Fatal(err)
@@ -262,8 +289,8 @@ func Test_GitLab_RepoPerms_cache(t *testing.T) {
 	// Different request, on internal repo
 	if _, err := authzProvider.RepoPerms(ctx,
 		acct(t, 2, gitlab.ServiceType, "https://gitlab.mine/", "2", "oauth-u2"),
-		map[authz.Repo]struct{}{
-			repo("981", "gitlab", "https://gitlab.mine/", "981"): {},
+		[]*types.Repo{
+			repo("981", "gitlab", "https://gitlab.mine/", "981"),
 		},
 	); err != nil {
 		t.Fatal(err)
@@ -281,8 +308,8 @@ func Test_GitLab_RepoPerms_cache(t *testing.T) {
 	// Make initial request twice again, expect cache miss the first time around
 	if _, err := authzProvider.RepoPerms(ctx,
 		acct(t, 1, gitlab.ServiceType, "https://gitlab.mine/", "1", "oauth-u1"),
-		map[authz.Repo]struct{}{
-			repo("10", "gitlab", "https://gitlab.mine/", "10"): {},
+		[]*types.Repo{
+			repo("10", "gitlab", "https://gitlab.mine/", "10"),
 		},
 	); err != nil {
 		t.Fatal(err)
@@ -302,65 +329,152 @@ func Test_GitLab_RepoPerms_cache(t *testing.T) {
 	}
 }
 
-func Test_GitLab_Repos(t *testing.T) {
-	type call struct {
-		repos     map[authz.Repo]struct{}
-		expMine   map[authz.Repo]struct{}
-		expOthers map[authz.Repo]struct{}
-	}
-	type test struct {
-		description string
-		op          GitLabOAuthAuthzProviderOp
-		calls       []call
-	}
-
-	tests := []test{
-		{
-			description: "standard config",
-			op: GitLabOAuthAuthzProviderOp{
-				BaseURL: mustURL(t, "https://gitlab.mine"),
+// Test_GitLab_RepoPerms_batchVisibility tests that Project visibility is fetched in batch (for
+// performance reasons)
+func Test_GitLab_RepoPerms_batchVisibility(t *testing.T) {
+	gitlabMockOp := mockGitLabOp{
+		t: t,
+		publicProjs: []int{ // public projects
+			991,
+		},
+		internalProjs: []int{ // internal projects
+			981,
+		},
+		privateProjs: map[int][2][]int32{ // private projects
+			10: {
+				{ // guests
+					2,
+				},
+				{ // content ("full access")
+					1,
+					3,
+				},
 			},
-			calls: []call{
+			20: {
 				{
-					repos: map[authz.Repo]struct{}{
-						repo("gitlab.mine/bl/repo-1", "", "", ""):                   {},
-						repo("gitlab.mine/kl/repo-1", "", "", ""):                   {},
-						repo("another.host/bl/repo-1", "", "", ""):                  {},
-						repo("a", gitlab.ServiceType, "https://gitlab.mine/", "23"): {},
-						repo("b", gitlab.ServiceType, "https://not-mine/", "34"):    {},
-						repo("c", "not-gitlab", "https://gitlab.mine/", "45"):       {},
-					},
-					expMine: map[authz.Repo]struct{}{
-						repo("a", gitlab.ServiceType, "https://gitlab.mine/", "23"): {},
-					},
-					expOthers: map[authz.Repo]struct{}{
-						repo("gitlab.mine/bl/repo-1", "", "", ""):                {},
-						repo("gitlab.mine/kl/repo-1", "", "", ""):                {},
-						repo("another.host/bl/repo-1", "", "", ""):               {},
-						repo("b", gitlab.ServiceType, "https://not-mine/", "34"): {},
-						repo("c", "not-gitlab", "https://gitlab.mine/", "45"):    {},
-					},
+					3,
+				},
+				{
+					2,
 				},
 			},
 		},
+		oauthToks: map[string]int32{
+			"oauth-u1": 1,
+			"oauth-u2": 2,
+			"oauth-u3": 3,
+		},
 	}
-	for _, test := range tests {
-		t.Run(test.description, func(t *testing.T) {
-			for _, c := range test.calls {
-				ctx := context.Background()
-				op := test.op
-				op.MockCache = make(mockCache)
-				authzProvider := NewOAuthProvider(op)
+	repos := map[string]*types.Repo{
+		"u1/repo1":       repo("u1/repo1", gitlab.ServiceType, "https://gitlab.mine/", "10"),
+		"u2/repo1":       repo("u2/repo1", gitlab.ServiceType, "https://gitlab.mine/", "20"),
+		"internal/repo1": repo("internal/repo1", gitlab.ServiceType, "https://gitlab.mine/", "981"),
+		"public/repo1":   repo("public/repo1", gitlab.ServiceType, "https://gitlab.mine/", "991"),
+	}
+	repoSlice := make([]*types.Repo, 0, len(repos))
+	for _, r := range repos {
+		repoSlice = append(repoSlice, r)
+	}
 
-				mine, others := authzProvider.Repos(ctx, c.repos)
-				if !reflect.DeepEqual(mine, c.expMine) {
-					t.Errorf("For input %v, expected mine to be %v, but got %v", c.repos, c.expMine, mine)
-				}
-				if !reflect.DeepEqual(others, c.expOthers) {
-					t.Errorf("For input %v, expected others to be %v, but got %v", c.repos, c.expOthers, others)
-				}
-			}
+	{
+		// Test case 1: batching threshold hit, { MinBatchThreshold: 1, MaxBatchRequests: 300 }
+		gitlabMock := newMockGitLab(gitlabMockOp)
+		gitlab.MockGetProject = gitlabMock.GetProject
+		gitlab.MockListProjects = gitlabMock.ListProjects
+		gitlab.MockListTree = gitlabMock.ListTree
 
-		})
+		ctx := context.Background()
+		authzProvider := newOAuthProvider(OAuthProviderOp{
+			BaseURL:           mustURL(t, "https://gitlab.mine"),
+			MockCache:         make(mockCache),
+			CacheTTL:          3 * time.Hour,
+			MinBatchThreshold: 1,
+			MaxBatchRequests:  300,
+		}, nil)
+		expPerms := []authz.RepoPerms{
+			{Repo: repos["u1/repo1"], Perms: authz.Read},
+			{Repo: repos["internal/repo1"], Perms: authz.Read},
+			{Repo: repos["public/repo1"], Perms: authz.Read},
+		}
+		expMadeGetProject := map[string]map[gitlab.GetProjectOp]int{
+			"oauth-u1": {
+				{ID: 10, CommonOp: gitlab.CommonOp{NoCache: true}}: 1,
+				{ID: 20, CommonOp: gitlab.CommonOp{NoCache: true}}: 1,
+			},
+		}
+		expMadeListProjects := map[string]map[string]int{
+			"oauth-u1": {"projects?per_page=100": 1},
+		}
+
+		perms, err := authzProvider.RepoPerms(ctx, acct(t, 1, "gitlab", "https://gitlab.mine/", "1", "oauth-u1"), repoSlice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sort.Sort(authz.RepoPermsSort(perms))
+		sort.Sort(authz.RepoPermsSort(expPerms))
+		if diff := cmp.Diff(expPerms, perms); diff != "" {
+			t.Errorf("expPerms != perms:\n%s", diff)
+		}
+		if diff := cmp.Diff(expMadeGetProject, gitlabMock.madeGetProject); diff != "" {
+			t.Errorf("expMadeGetProject != gitlabMock.madeGetProject:\n%s", diff)
+		}
+		if diff := cmp.Diff(expMadeListProjects, gitlabMock.madeListProjects); diff != "" {
+			t.Errorf("expMadeListProjects != gitlabMock.madeListProjects:\n%s", diff)
+		}
+
+		gitlab.MockGetProject = nil
+		gitlab.MockListProjects = nil
+		gitlab.MockListTree = nil
+	}
+
+	{
+		// Test case 2: batching threshold NOT hit { MinBatchThreshold: 200, MaxBatchRequests: 300 }
+		gitlabMock := newMockGitLab(gitlabMockOp)
+		gitlab.MockGetProject = gitlabMock.GetProject
+		gitlab.MockListProjects = gitlabMock.ListProjects
+		gitlab.MockListTree = gitlabMock.ListTree
+
+		ctx := context.Background()
+		authzProvider := newOAuthProvider(OAuthProviderOp{
+			BaseURL:           mustURL(t, "https://gitlab.mine"),
+			MockCache:         make(mockCache),
+			CacheTTL:          3 * time.Hour,
+			MinBatchThreshold: 200,
+			MaxBatchRequests:  300,
+		}, nil)
+		expPerms := []authz.RepoPerms{
+			{Repo: repos["u1/repo1"], Perms: authz.Read},
+			{Repo: repos["internal/repo1"], Perms: authz.Read},
+			{Repo: repos["public/repo1"], Perms: authz.Read},
+		}
+		expMadeGetProject := map[string]map[gitlab.GetProjectOp]int{
+			"oauth-u1": {
+				{ID: 10, CommonOp: gitlab.CommonOp{NoCache: true}}:  1,
+				{ID: 20, CommonOp: gitlab.CommonOp{NoCache: true}}:  1,
+				{ID: 981, CommonOp: gitlab.CommonOp{NoCache: true}}: 1,
+				{ID: 991, CommonOp: gitlab.CommonOp{NoCache: true}}: 1,
+			},
+		}
+		expMadeListProjects := map[string]map[string]int{}
+
+		perms, err := authzProvider.RepoPerms(ctx, acct(t, 1, "gitlab", "https://gitlab.mine/", "1", "oauth-u1"), repoSlice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sort.Sort(authz.RepoPermsSort(perms))
+		sort.Sort(authz.RepoPermsSort(expPerms))
+		if diff := cmp.Diff(perms, expPerms); diff != "" {
+			t.Errorf("perms != expPerms:\n%s", diff)
+		}
+		if diff := cmp.Diff(expMadeGetProject, gitlabMock.madeGetProject); diff != "" {
+			t.Errorf("expMadeGetProject != gitlabMock.madeGetProject:\n%s", diff)
+		}
+		if diff := cmp.Diff(expMadeListProjects, gitlabMock.madeListProjects); diff != "" {
+			t.Errorf("expMadeListProjects != gitlabMock.madeListProjects:\n%s", diff)
+		}
+
+		gitlab.MockGetProject = nil
+		gitlab.MockListProjects = nil
+		gitlab.MockListTree = nil
 	}
 }

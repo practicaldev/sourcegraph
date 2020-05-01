@@ -42,7 +42,12 @@ export class CopyableText extends React.PureComponent<Props, State> {
                         onClick={this.onClickInput}
                     />
                     <div className="input-group-append">
-                        <button className="btn btn-secondary" onClick={this.onClickButton} disabled={this.state.copied}>
+                        <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={this.onClickButton}
+                            disabled={this.state.copied}
+                        >
                             <ContentCopyIcon className="icon-inline" /> {this.state.copied ? 'Copied' : 'Copy'}
                         </button>
                     </div>
@@ -57,7 +62,7 @@ export class CopyableText extends React.PureComponent<Props, State> {
         this.copyToClipboard()
     }
 
-    private onClickButton = () => this.copyToClipboard()
+    private onClickButton = (): void => this.copyToClipboard()
 
     private copyToClipboard(): void {
         copy(this.props.text)

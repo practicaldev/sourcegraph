@@ -1,53 +1,65 @@
 package cli
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/NYTimes/gziphandler"
 	gcontext "github.com/gorilla/context"
 	"github.com/gorilla/mux"
+	"github.com/graph-gophers/graphql-go"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/auth"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/globals"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/hooks"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/httpapi"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/app"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/app/assetsutil"
 	internalauth "github.com/sourcegraph/sourcegraph/cmd/frontend/internal/auth"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/cli/middleware"
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/httpapi"
+	internalhttpapi "github.com/sourcegraph/sourcegraph/cmd/frontend/internal/httpapi"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/httpapi/router"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/pkg/handlerutil"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/session"
-	"github.com/sourcegraph/sourcegraph/pkg/actor"
-	"github.com/sourcegraph/sourcegraph/pkg/conf"
-	tracepkg "github.com/sourcegraph/sourcegraph/pkg/trace"
-	"github.com/sourcegraph/sourcegraph/pkg/version"
+	"github.com/sourcegraph/sourcegraph/internal/actor"
+	"github.com/sourcegraph/sourcegraph/internal/conf"
+	tracepkg "github.com/sourcegraph/sourcegraph/internal/trace"
+	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
+	"github.com/sourcegraph/sourcegraph/internal/version"
 )
 
 // newExternalHTTPHandler creates and returns the HTTP handler that serves the app and API pages to
 // external clients.
-func newExternalHTTPHandler(ctx context.Context) (http.Handler, error) {
+func newExternalHTTPHandler(schema *graphql.Schema, githubWebhook, bitbucketServerWebhook http.Handler, lsifServerProxy *httpapi.LSIFServerProxy) (http.Handler, error) {
 	// Each auth middleware determines on a per-request basis whether it should be enabled (if not, it
 	// immediately delegates the request to the next middleware in the chain).
 	authMiddlewares := auth.AuthMiddleware()
 
 	// HTTP API handler.
-	apiHandler := httpapi.NewHandler(router.New(mux.NewRouter().PathPrefix("/.api/").Subrouter()))
+	r := router.New(mux.NewRouter().PathPrefix("/.api/").Subrouter())
+	apiHandler := internalhttpapi.NewHandler(r, schema, githubWebhook, bitbucketServerWebhook, lsifServerProxy)
 	apiHandler = authMiddlewares.API(apiHandler) // 🚨 SECURITY: auth middleware
 	// 🚨 SECURITY: The HTTP API should not accept cookies as authentication (except those with the
 	// X-Requested-With header). Doing so would open it up to CSRF attacks.
 	apiHandler = session.CookieMiddlewareWithCSRFSafety(apiHandler, corsAllowHeader, isTrustedOrigin) // API accepts cookies with special header
-	apiHandler = httpapi.AccessTokenAuthMiddleware(apiHandler)                                        // API accepts access tokens
+	apiHandler = internalhttpapi.AccessTokenAuthMiddleware(apiHandler)                                // API accepts access tokens
+	if hooks.PostAuthMiddleware != nil {
+		// 🚨 SECURITY: These all run after the auth handler so the client is authenticated.
+		apiHandler = hooks.PostAuthMiddleware(apiHandler)
+	}
 	apiHandler = gziphandler.GzipHandler(apiHandler)
 
 	// App handler (HTML pages).
 	appHandler := app.NewHandler()
-	appHandler = handlerutil.CSRFMiddleware(appHandler, globals.ExternalURL.Scheme == "https") // after appAuthMiddleware because SAML IdP posts data to us w/o a CSRF token
-	appHandler = authMiddlewares.App(appHandler)                                               // 🚨 SECURITY: auth middleware
-	appHandler = session.CookieMiddleware(appHandler)                                          // app accepts cookies
-	appHandler = httpapi.AccessTokenAuthMiddleware(appHandler)                                 // app accepts access tokens
+	appHandler = handlerutil.CSRFMiddleware(appHandler, func() bool {
+		return globals.ExternalURL().Scheme == "https"
+	}) // after appAuthMiddleware because SAML IdP posts data to us w/o a CSRF token
+	appHandler = authMiddlewares.App(appHandler)                       // 🚨 SECURITY: auth middleware
+	appHandler = session.CookieMiddleware(appHandler)                  // app accepts cookies
+	appHandler = internalhttpapi.AccessTokenAuthMiddleware(appHandler) // app accepts access tokens
+	if hooks.PostAuthMiddleware != nil {
+		// 🚨 SECURITY: These all run after the auth handler so the client is authenticated.
+		appHandler = hooks.PostAuthMiddleware(appHandler)
+	}
 
 	// Mount handlers and assets.
 	sm := http.NewServeMux()
@@ -62,11 +74,8 @@ func newExternalHTTPHandler(ctx context.Context) (http.Handler, error) {
 	// 🚨 SECURITY: Auth middleware that must run before other auth middlewares.
 	h = internalauth.OverrideAuthMiddleware(h)
 	h = internalauth.ForbidAllRequestsMiddleware(h)
-	// 🚨 SECURITY: These all run before the auth handler, so the client is not yet authenticated.
-	if hooks.PreAuthMiddleware != nil {
-		h = hooks.PreAuthMiddleware(h)
-	}
-	h = tracepkg.Middleware(h)
+	h = tracepkg.HTTPTraceMiddleware(h)
+	h = ot.Middleware(h)
 	h = middleware.SourcegraphComGoGetHandler(h)
 	h = middleware.BlackHole(h)
 	h = secureHeadersMiddleware(h)
@@ -80,7 +89,7 @@ func healthCheckMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/healthz", "/__version":
-			fmt.Fprintf(w, version.Version())
+			_, _ = w.Write([]byte(version.Version()))
 		default:
 			next.ServeHTTP(w, r)
 		}
@@ -89,12 +98,13 @@ func healthCheckMiddleware(next http.Handler) http.Handler {
 
 // newInternalHTTPHandler creates and returns the HTTP handler for the internal API (accessible to
 // other internal services).
-func newInternalHTTPHandler() http.Handler {
+func newInternalHTTPHandler(schema *graphql.Schema) http.Handler {
 	internalMux := http.NewServeMux()
 	internalMux.Handle("/.internal/", gziphandler.GzipHandler(
 		withInternalActor(
-			httpapi.NewInternalHandler(
+			internalhttpapi.NewInternalHandler(
 				router.NewInternal(mux.NewRouter().PathPrefix("/.internal/").Subrouter()),
+				schema,
 			),
 		),
 	))
@@ -133,13 +143,31 @@ func secureHeadersMiddleware(next http.Handler) http.Handler {
 		// no cache by default
 		w.Header().Set("Cache-Control", "no-cache, max-age=0")
 
-		if corsOrigin := conf.Get().CorsOrigin; corsOrigin != "" {
+		// CORS
+		// If the headerOrigin is the development or production Chrome Extension explicitly set the Allow-Control-Allow-Origin
+		// to the incoming header URL. Otherwise use the configured CORS origin.
+		//
+		// Note: API users also rely on this codepath handling wildcards
+		// properly. For example, if Sourcegraph is behind a corporate VPN an
+		// admin may choose to set the CORS origin to "*" and would expect
+		// Sourcegraph to respond appropriately to any Origin request header:
+		//
+		// 	"Origin: *" -> "Access-Control-Allow-Origin: *"
+		// 	"Origin: https://foobar.com" -> "Access-Control-Allow-Origin: https://foobar.com"
+		//
+		headerOrigin := r.Header.Get("Origin")
+		isExtensionRequest := headerOrigin == devExtension || headerOrigin == prodExtension
+
+		if corsOrigin := conf.Get().CorsOrigin; corsOrigin != "" || isExtensionRequest {
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Origin", corsOrigin)
+
+			if isExtensionRequest || isAllowedOrigin(headerOrigin, strings.Fields(corsOrigin)) {
+				w.Header().Set("Access-Control-Allow-Origin", headerOrigin)
+			}
 
 			if r.Method == "OPTIONS" {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", corsAllowHeader+", X-Sourcegraph-Client, Content-Type, Authorization")
+				w.Header().Set("Access-Control-Allow-Headers", corsAllowHeader+", X-Sourcegraph-Client, Content-Type, Authorization, X-Sourcegraph-Should-Trace")
 				w.WriteHeader(http.StatusOK)
 				return // do not invoke next handler
 			}
@@ -154,14 +182,16 @@ func secureHeadersMiddleware(next http.Handler) http.Handler {
 func isTrustedOrigin(r *http.Request) bool {
 	requestOrigin := r.Header.Get("Origin")
 
+	isExtensionRequest := requestOrigin == devExtension || requestOrigin == prodExtension
+
 	var isCORSAllowedRequest bool
 	if corsOrigin := conf.Get().CorsOrigin; corsOrigin != "" {
 		isCORSAllowedRequest = isAllowedOrigin(requestOrigin, strings.Fields(corsOrigin))
 	}
 
-	if externalURL := strings.TrimSuffix(conf.Get().Critical.ExternalURL, "/"); externalURL != "" && requestOrigin == externalURL {
+	if externalURL := strings.TrimSuffix(conf.Get().ExternalURL, "/"); externalURL != "" && requestOrigin == externalURL {
 		isCORSAllowedRequest = true
 	}
 
-	return isCORSAllowedRequest
+	return isExtensionRequest || isCORSAllowedRequest
 }

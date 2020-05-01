@@ -10,15 +10,16 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
+	"testing/quick"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 const (
 	testRepoA = "testrepo-A"
-	testRepoB = "testrepo-B"
 	testRepoC = "testrepo-C"
 )
 
@@ -34,19 +35,10 @@ func TestCleanupInactive(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
-	repoB := path.Join(root, testRepoB, ".git")
-	cmd = exec.Command("git", "--bare", "init", repoB)
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
 	repoC := path.Join(root, testRepoC, ".git")
 	if err := os.MkdirAll(repoC, os.ModePerm); err != nil {
 		t.Fatal(err)
 	}
-	filepath.Walk(repoB, func(p string, _ os.FileInfo, _ error) error {
-		// Rollback the mtime for these files to simulate an old repo.
-		return os.Chtimes(p, time.Now().Add(-inactiveRepoTTL-time.Hour), time.Now().Add(-inactiveRepoTTL-time.Hour))
-	})
 
 	s := &Server{ReposDir: root, DeleteStaleRepositories: true}
 	s.Handler() // Handler as a side-effect sets up Server
@@ -54,9 +46,6 @@ func TestCleanupInactive(t *testing.T) {
 
 	if _, err := os.Stat(repoA); os.IsNotExist(err) {
 		t.Error("expected repoA not to be removed")
-	}
-	if _, err := os.Stat(repoB); err == nil {
-		t.Error("expected repoB to be removed during clean up")
 	}
 	if _, err := os.Stat(repoC); err == nil {
 		t.Error("expected corrupt repoC to be removed during clean up")
@@ -70,66 +59,113 @@ func TestCleanupExpired(t *testing.T) {
 	}
 	defer os.RemoveAll(root)
 
-	repoA := path.Join(root, testRepoA, ".git")
-	cmd := exec.Command("git", "--bare", "init", repoA)
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	repoB := path.Join(root, testRepoB, ".git")
-	cmd = exec.Command("git", "--bare", "init", repoB)
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	remote := path.Join(root, testRepoC, ".git")
-	cmd = exec.Command("git", "--bare", "init", remote)
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
+	repoNew := path.Join(root, "repo-new", ".git")
+	repoOld := path.Join(root, "repo-old", ".git")
+	repoGCNew := path.Join(root, "repo-gc-new", ".git")
+	repoGCOld := path.Join(root, "repo-gc-old", ".git")
+	repoBoom := path.Join(root, "repo-boom", ".git")
+	repoCorrupt := path.Join(root, "repo-corrupt", ".git")
+	remote := path.Join(root, "remote", ".git")
+	for _, path := range []string{repoNew, repoOld, repoGCNew, repoGCOld, repoBoom, repoCorrupt, remote} {
+		cmd := exec.Command("git", "--bare", "init", path)
+		if err := cmd.Run(); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	origRepoRemoteURL := repoRemoteURL
-	repoRemoteURL = func(ctx context.Context, dir string) (string, error) {
+	repoRemoteURL = func(ctx context.Context, dir GitDir) (string, error) {
+		if string(dir) == repoBoom {
+			return "", errors.Errorf("boom")
+		}
 		return remote, nil
 	}
 	defer func() { repoRemoteURL = origRepoRemoteURL }()
 
-	atime, err := os.Stat(filepath.Join(repoA, "HEAD"))
-	if err != nil {
+	modTime := func(path string) time.Time {
+		t.Helper()
+		fi, err := os.Stat(filepath.Join(path, "HEAD"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.ModTime()
+	}
+	recloneTime := func(path string) time.Time {
+		t.Helper()
+		ts, err := getRecloneTime(GitDir(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ts
+	}
+
+	writeFile(t, filepath.Join(repoGCNew, "gc.log"), []byte("warning: There are too many unreachable loose objects; run 'git prune' to remove them."))
+	writeFile(t, filepath.Join(repoGCOld, "gc.log"), []byte("warning: There are too many unreachable loose objects; run 'git prune' to remove them."))
+
+	for path, delta := range map[string]time.Duration{
+		repoOld:     2 * repoTTL,
+		repoGCOld:   2 * repoTTLGC,
+		repoBoom:    2 * repoTTL,
+		repoCorrupt: repoTTLGC / 2, // should only trigger corrupt, not old
+	} {
+		ts := time.Now().Add(-delta)
+		if err := setRecloneTime(GitDir(path), ts); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(filepath.Join(path, "HEAD"), ts, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := gitConfigSet(GitDir(repoCorrupt), "sourcegraph.maybeCorruptRepo", "1"); err != nil {
 		t.Fatal(err)
 	}
-	cmd = exec.Command("git", "config", "--add", "sourcegraph.recloneTimestamp", strconv.FormatInt(time.Now().Add(-(2*repoTTL)).Unix(), 10))
-	cmd.Dir = repoB
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
+
+	now := time.Now()
+	repoNewTime := modTime(repoNew)
+	repoOldTime := modTime(repoOld)
+	repoGCNewTime := modTime(repoGCNew)
+	repoGCOldTime := modTime(repoGCOld)
+	repoCorruptTime := modTime(repoBoom)
+	repoBoomTime := modTime(repoBoom)
+	repoBoomRecloneTime := recloneTime(repoBoom)
 
 	s := &Server{ReposDir: root}
 	s.Handler() // Handler as a side-effect sets up Server
 	s.cleanupRepos()
 
-	fi, err := os.Stat(filepath.Join(repoA, "HEAD"))
-	if err != nil {
-		// repoA should still exist.
-		t.Fatal(err)
+	// repos that shouldn't be recloned
+	if repoNewTime.Before(modTime(repoNew)) {
+		t.Error("expected repoNew to not be modified")
 	}
-	if atime.ModTime().Before(fi.ModTime()) {
-		// repoA should not have been recloned.
-		t.Error("expected repoA to not be modified")
+	if repoGCNewTime.Before(modTime(repoGCNew)) {
+		t.Error("expected repoGCNew to not be modified")
 	}
-	fi, err = os.Stat(repoB)
-	if err != nil {
-		// repoB should still exist after being recloned.
-		t.Fatal(err)
+
+	// repos that should be recloned
+	if !repoOldTime.Before(modTime(repoOld)) {
+		t.Error("expected repoOld to be recloned during clean up")
 	}
-	// Expect the repo to be recloned hand have a recent mod time.
-	ti := time.Now().Add(-repoTTL)
-	if fi.ModTime().Before(ti) {
-		t.Error("expected repoB to be recloned during clean up")
+	if !repoGCOldTime.Before(modTime(repoGCOld)) {
+		t.Error("expected repoGCOld to be recloned during clean up")
+	}
+	if !repoCorruptTime.Before(modTime(repoCorrupt)) {
+		t.Error("expected repoCorrupt to be recloned during clean up")
+	}
+
+	// repos that fail to clone need to have recloneTime updated
+	if repoBoomTime.Before(modTime(repoBoom)) {
+		t.Fatal("expected repoBoom to fail to reclone due to hardcoding getRemoteURL failure")
+	}
+	if !repoBoomRecloneTime.Before(recloneTime(repoBoom)) {
+		t.Error("expected repoBoom reclone time to be updated")
+	}
+	if !now.After(recloneTime(repoBoom)) {
+		t.Error("expected repoBoom reclone time to be updated to not now")
 	}
 }
 
 func TestCleanupOldLocks(t *testing.T) {
-	root, cleanup := tmpDir(t)
-	defer cleanup()
+	root := tmpDir(t)
 
 	// Only recent lock files should remain.
 	mkFiles(t, root,
@@ -195,8 +231,7 @@ func TestCleanupOldLocks(t *testing.T) {
 }
 
 func TestSetupAndClearTmp(t *testing.T) {
-	root, cleanup := tmpDir(t)
-	defer cleanup()
+	root := tmpDir(t)
 
 	s := &Server{ReposDir: root}
 
@@ -258,8 +293,7 @@ func TestSetupAndClearTmp(t *testing.T) {
 }
 
 func TestSetupAndClearTmp_Empty(t *testing.T) {
-	root, cleanup := tmpDir(t)
-	defer cleanup()
+	root := tmpDir(t)
 
 	s := &Server{ReposDir: root}
 
@@ -273,8 +307,7 @@ func TestSetupAndClearTmp_Empty(t *testing.T) {
 }
 
 func TestRemoveRepoDirectory(t *testing.T) {
-	root, cleanup := tmpDir(t)
-	defer cleanup()
+	root := tmpDir(t)
 
 	mkFiles(t, root,
 		"github.com/foo/baz/.git/HEAD",
@@ -292,7 +325,7 @@ func TestRemoveRepoDirectory(t *testing.T) {
 		"github.com/bam/bam/.git",
 		"example.com/repo/.git",
 	} {
-		if err := s.removeRepoDirectory(filepath.Join(root, d)); err != nil {
+		if err := s.removeRepoDirectory(GitDir(filepath.Join(root, d))); err != nil {
 			t.Fatalf("failed to remove %s: %s", d, err)
 		}
 	}
@@ -304,8 +337,7 @@ func TestRemoveRepoDirectory(t *testing.T) {
 }
 
 func TestRemoveRepoDirectory_Empty(t *testing.T) {
-	root, cleanup := tmpDir(t)
-	defer cleanup()
+	root := tmpDir(t)
 
 	mkFiles(t, root,
 		"github.com/foo/baz/.git/HEAD",
@@ -314,7 +346,7 @@ func TestRemoveRepoDirectory_Empty(t *testing.T) {
 		ReposDir: root,
 	}
 
-	if err := s.removeRepoDirectory(filepath.Join(root, "github.com/foo/baz/.git")); err != nil {
+	if err := s.removeRepoDirectory(GitDir(filepath.Join(root, "github.com/foo/baz/.git"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -323,13 +355,76 @@ func TestRemoveRepoDirectory_Empty(t *testing.T) {
 	)
 }
 
-func tmpDir(t *testing.T) (string, func()) {
+func Test_howManyBytesToFree(t *testing.T) {
+	const G = 1024 * 1024 * 1024
+	s := &Server{
+		DesiredPercentFree: 10,
+	}
+
+	tcs := []struct {
+		name      string
+		diskSize  uint64
+		bytesFree uint64
+		want      int64
+	}{
+		{
+			name:      "if there is already enough space, no space is freed",
+			diskSize:  10 * G,
+			bytesFree: 1.5 * G,
+			want:      0,
+		},
+		{
+			name:      "if there is exactly enough space, no space is freed",
+			diskSize:  10 * G,
+			bytesFree: 1 * G,
+			want:      0,
+		},
+		{
+			name:      "if there not enough space, some space is freed",
+			diskSize:  10 * G,
+			bytesFree: 0.5 * G,
+			want:      int64(0.5 * G),
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			s.DiskSizer = &fakeDiskSizer{
+				diskSize:  tc.diskSize,
+				bytesFree: tc.bytesFree,
+			}
+			b, err := s.howManyBytesToFree()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if b != tc.want {
+				t.Errorf("s.howManyBytesToFree(...) is %v, want 0", b)
+			}
+		})
+	}
+}
+
+type fakeDiskSizer struct {
+	bytesFree uint64
+	diskSize  uint64
+}
+
+func (f *fakeDiskSizer) BytesFreeOnDisk(mountPoint string) (uint64, error) {
+	return f.bytesFree, nil
+}
+
+func (f *fakeDiskSizer) DiskSizeBytes(mountPoint string) (uint64, error) {
+	return f.diskSize, nil
+}
+
+func tmpDir(t *testing.T) string {
 	t.Helper()
-	dir, err := ioutil.TempDir("", t.Name())
+	dir, err := ioutil.TempDir("", filepath.Base(t.Name()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return dir, func() { os.RemoveAll(dir) }
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }
 
 func mkFiles(t *testing.T, root string, paths ...string) {
@@ -338,13 +433,15 @@ func mkFiles(t *testing.T, root string, paths ...string) {
 		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(p)), os.ModePerm); err != nil {
 			t.Fatal(err)
 		}
-		fd, err := os.OpenFile(filepath.Join(root, p), os.O_RDONLY|os.O_CREATE, 0666)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := fd.Close(); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, filepath.Join(root, p), nil)
+	}
+}
+
+func writeFile(t *testing.T, path string, content []byte) {
+	t.Helper()
+	err := ioutil.WriteFile(path, content, 0666)
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -408,4 +505,118 @@ func isEmptyDir(path string) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+func TestFreeUpSpace(t *testing.T) {
+	t.Run("no error if no space requested and no repos", func(t *testing.T) {
+		s := &Server{DiskSizer: &fakeDiskSizer{}}
+		if err := s.freeUpSpace(0); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("error if space requested and no repos", func(t *testing.T) {
+		s := &Server{DiskSizer: &fakeDiskSizer{}}
+		if err := s.freeUpSpace(1); err == nil {
+			t.Fatal("want error")
+		}
+	})
+	t.Run("oldest repo gets removed to free up space", func(t *testing.T) {
+		// Set up.
+		rd, err := ioutil.TempDir("", "freeUpSpace")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r1 := filepath.Join(rd, "repo1")
+		r2 := filepath.Join(rd, "repo2")
+		if err := makeFakeRepo(r1, 1000); err != nil {
+			t.Fatal(err)
+		}
+		if err := makeFakeRepo(r2, 1000); err != nil {
+			t.Fatal(err)
+		}
+		// Force the modification time of r2 to be after that of r1.
+		fi1, err := os.Stat(r1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mtime2 := fi1.ModTime().Add(time.Second)
+		if err := os.Chtimes(r2, time.Now(), mtime2); err != nil {
+			t.Fatal(err)
+		}
+
+		// Run.
+		s := Server{
+			ReposDir:  rd,
+			DiskSizer: &fakeDiskSizer{},
+		}
+		if err := s.freeUpSpace(1000); err != nil {
+			t.Fatal(err)
+		}
+
+		// Check.
+		assertPaths(t, rd,
+			".tmp",
+			"repo2/.git/HEAD",
+			"repo2/.git/space_eater")
+		rds, err := dirSize(rd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantSize := int64(1000)
+		if rds > wantSize {
+			t.Errorf("repo dir size is %d, want no more than %d", rds, wantSize)
+		}
+	})
+}
+
+func makeFakeRepo(d string, sizeBytes int) error {
+	gd := filepath.Join(d, ".git")
+	if err := os.MkdirAll(gd, 0700); err != nil {
+		return errors.Wrap(err, "creating .git dir and any parents")
+	}
+	if err := ioutil.WriteFile(filepath.Join(gd, "HEAD"), nil, 0666); err != nil {
+		return errors.Wrap(err, "creating HEAD file")
+	}
+	if err := ioutil.WriteFile(filepath.Join(gd, "space_eater"), make([]byte, sizeBytes), 0666); err != nil {
+		return errors.Wrapf(err, "writing to space_eater file")
+	}
+	return nil
+}
+
+func TestMaybeCorruptStderrRe(t *testing.T) {
+	bad := []string{
+		"error: packfile .git/objects/pack/pack-a.pack does not match index",
+		"error: Could not read d24d09b8bc5d1ea2c3aa24455f4578db6aa3afda\n",
+		`error: short SHA1 1325 is ambiguous
+error: Could not read d24d09b8bc5d1ea2c3aa24455f4578db6aa3afda`,
+		`unrelated
+error: Could not read d24d09b8bc5d1ea2c3aa24455f4578db6aa3afda`,
+		"\n\nerror: Could not read d24d09b8bc5d1ea2c3aa24455f4578db6aa3afda",
+	}
+	good := []string{
+		"",
+		"error: short SHA1 1325 is ambiguous",
+		"error: object 156639577dd2ea91cdd53b25352648387d985743 is a blob, not a commit",
+		"error: object 45043b3ff0440f4d7937f8c68f8fb2881759edef is a tree, not a commit",
+	}
+	for _, stderr := range bad {
+		if !maybeCorruptStderrRe.MatchString(stderr) {
+			t.Errorf("should contain corrupt line:\n%s", stderr)
+		}
+	}
+	for _, stderr := range good {
+		if maybeCorruptStderrRe.MatchString(stderr) {
+			t.Errorf("should not contain corrupt line:\n%s", stderr)
+		}
+	}
+}
+
+func TestJitterDuration(t *testing.T) {
+	f := func(key string) bool {
+		d := jitterDuration(key, repoTTLGC/4)
+		return 0 <= d && d < repoTTLGC/4
+	}
+	if err := quick.Check(f, nil); err != nil {
+		t.Error(err)
+	}
 }

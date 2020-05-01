@@ -1,8 +1,7 @@
 import * as H from 'history'
 import { isEqual } from 'lodash'
 import * as React from 'react'
-import { Subscription } from 'rxjs'
-import { Subject } from 'rxjs'
+import { Subject, Subscription } from 'rxjs'
 import { distinctUntilChanged, startWith } from 'rxjs/operators'
 import { Key } from 'ts-key-enum'
 import { AbsoluteRepo } from '../../../shared/src/util/url'
@@ -67,12 +66,12 @@ const nextChild = (node: TreeNode, index: number): TreeNode => {
 }
 
 /**
- *  Helper for prevChild, this gets the deepest avialable descendant of a given node.
+ *  Helper for prevChild, this gets the deepest available descendant of a given node.
  *  For a given node, a sibling node can have an arbitrary number of expanded directories.
  *  In order to get the previous item in the tree, we need the absolute last
  *  available descendent of a the previous sibling node.
  */
-const getDeepestDescendant = (node: TreeNode) => {
+const getDeepestDescendant = (node: TreeNode): TreeNode => {
     while (node && node.childNodes.length > 0) {
         node = node.childNodes[node.childNodes.length - 1]
     }
@@ -146,7 +145,7 @@ export class Tree extends React.PureComponent<Props, State> {
                 return
             }
             const parent = this.state.selectedNode.parent
-            if (parent !== null && parent.parent !== null) {
+            if (parent?.parent) {
                 this.selectNode(parent)
                 return
             }
@@ -225,7 +224,7 @@ export class Tree extends React.PureComponent<Props, State> {
     public componentDidMount(): void {
         this.subscriptions.add(
             this.expandDirectoryChanges.subscribe(({ path, expanded, node }) => {
-                this.setState((prevState, props) => ({
+                this.setState(prevState => ({
                     resolveTo: expanded ? [...prevState.resolveTo, path] : prevState.resolveTo.filter(p => p !== path),
                 }))
                 if (!expanded) {
@@ -240,16 +239,16 @@ export class Tree extends React.PureComponent<Props, State> {
 
         this.subscriptions.add(
             this.componentUpdates
-                .pipe(
-                    startWith(this.props),
-                    distinctUntilChanged(isEqual)
-                )
+                .pipe(startWith(this.props), distinctUntilChanged(isEqual))
                 .subscribe((props: Props) => {
                     const newParentPath = props.activePathIsDir ? props.activePath : dirname(props.activePath)
                     const queryParams = new URLSearchParams(this.props.history.location.search)
-                    // If we're updating due to a file or directory suggestion, load the relevant partial tree and jump to the file.
+                    const queryParamsHasSubtree = queryParams.get('subtree') === 'true'
+
+                    // If we're updating due to a file/directory suggestion or code intel action,
+                    // load the relevant partial tree and jump to the file.
                     // This case is only used when going from an ancestor to a child file/directory, or equal.
-                    if (queryParams.has('suggestion') && dotPathAsUndefined(newParentPath)) {
+                    if (queryParamsHasSubtree && !queryParams.has('tab') && dotPathAsUndefined(newParentPath)) {
                         this.setState({
                             parentPath: dotPathAsUndefined(newParentPath),
                             resolveTo: [newParentPath],
@@ -269,16 +268,19 @@ export class Tree extends React.PureComponent<Props, State> {
                         })
                     }
 
-                    // Strip the ?suggestion query param. Handle both when going from ancestor -> child and child -> ancestor.
-                    if (queryParams.has('suggestion')) {
-                        queryParams.delete('suggestion')
-                        this.props.history.replace({ search: queryParams.toString() })
+                    // Strip the ?subtree query param. Handle both when going from ancestor -> child and child -> ancestor.
+                    queryParams.delete('subtree')
+                    if (queryParamsHasSubtree && !queryParams.has('tab')) {
+                        this.props.history.replace({
+                            search: queryParams.toString(),
+                            hash: this.props.history.location.hash,
+                        })
                     }
                 })
         )
     }
 
-    public componentDidUpdate(nextProps: Props): void {
+    public componentDidUpdate(): void {
         this.componentUpdates.next(this.props)
     }
 
@@ -321,7 +323,7 @@ export class Tree extends React.PureComponent<Props, State> {
         )
     }
 
-    private setChildNode = (node: TreeNode, index: number) => {
+    private setChildNode = (node: TreeNode, index: number): void => {
         this.node.childNodes[index] = node
     }
 

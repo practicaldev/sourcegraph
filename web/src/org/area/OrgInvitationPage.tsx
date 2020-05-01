@@ -1,5 +1,4 @@
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import { upperFirst } from 'lodash'
 import * as React from 'react'
 import { Link, Redirect } from 'react-router-dom'
 import { concat, Observable, Subject, Subscription } from 'rxjs'
@@ -18,12 +17,15 @@ import { eventLogger } from '../../tracking/eventLogger'
 import { userURL } from '../../user'
 import { OrgAvatar } from '../OrgAvatar'
 import { OrgAreaPageProps } from './OrgArea'
+import { ErrorAlert } from '../../components/alerts'
+import * as H from 'history'
 
 interface Props extends OrgAreaPageProps {
     authenticatedUser: GQL.IUser
 
     /** Called when the viewer responds to the invitation. */
     onDidRespondToInvitation: () => void
+    history: H.History
 }
 
 interface State {
@@ -80,14 +82,17 @@ export const OrgInvitationPage = withAuthenticatedUser(
                             )
                         )
                     )
-                    .subscribe(stateUpdate => this.setState(stateUpdate as State), err => console.error(err))
+                    .subscribe(
+                        stateUpdate => this.setState(stateUpdate as State),
+                        err => console.error(err)
+                    )
             )
 
             this.componentUpdates.next(this.props)
         }
 
-        public componentWillReceiveProps(props: Props): void {
-            this.componentUpdates.next(props)
+        public componentDidUpdate(): void {
+            this.componentUpdates.next(this.props)
         }
 
         public componentWillUnmount(): void {
@@ -139,12 +144,13 @@ export const OrgInvitationPage = withAuthenticatedUser(
                                     >
                                         Join {this.props.org.name}
                                     </button>
-                                    <Link className="btn btn-outline-link" to={orgURL(this.props.org.name)}>
+                                    <Link className="btn btn-link" to={orgURL(this.props.org.name)}>
                                         Go to {this.props.org.name}'s profile
                                     </Link>
                                 </div>
                                 <div>
                                     <button
+                                        type="button"
                                         className="btn btn-link btn-sm"
                                         disabled={this.state.submissionOrError === 'loading'}
                                         onClick={this.onDeclineInvitation}
@@ -153,9 +159,11 @@ export const OrgInvitationPage = withAuthenticatedUser(
                                     </button>
                                 </div>
                                 {isErrorLike(this.state.submissionOrError) && (
-                                    <div className="alert alert-danger my-2">
-                                        {upperFirst(this.state.submissionOrError.message)}
-                                    </div>
+                                    <ErrorAlert
+                                        className="my-2"
+                                        error={this.state.submissionOrError}
+                                        history={this.props.history}
+                                    />
                                 )}
                                 {this.state.submissionOrError === 'loading' && (
                                     <LoadingSpinner className="icon-inline" />

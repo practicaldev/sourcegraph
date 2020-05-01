@@ -5,8 +5,8 @@ import (
 	"html/template"
 	"net/http"
 
+	"github.com/inconshreveable/log15"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/session"
-	log15 "gopkg.in/inconshreveable/log15.v2"
 )
 
 type SignOutURL struct {
@@ -58,11 +58,10 @@ func renderSignoutPageTemplate(w http.ResponseWriter, r *http.Request, signoutUR
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	buf.WriteTo(w)
+	_, _ = buf.WriteTo(w)
 }
 
-var (
-	signoutPageTemplate = template.Must(template.New("").Parse(`
+var signoutPageTemplate = template.Must(template.New("").Parse(`
 <style>
 .auth-box,
 .center {
@@ -83,14 +82,14 @@ html {
     -webkit-text-size-adjust: 100%;
 }
 body {
-	/* Body BG color from gray-23 client/browser/src/global-styles/colors.scss*/
+	/* Body BG color from gray-23 browser/src/global-styles/colors.scss*/
     background-color: #0e121b;
 }
 * {
     font-family: system,-apple-system,San Francisco,\.SFNSDisplay-Regular,Segoe UI,Segoe,Segoe WP,Helvetica Neue,helvetica,Lucida Grande,arial,sans-serif;
     font-size: 14px;
 
-	/* Text color from gray-01 client/browser/src/global-styles/colors.scss */
+	/* Text color from gray-01 browser/src/global-styles/colors.scss */
     color: #f2f4f8;
 }
 .auth-box {
@@ -100,7 +99,7 @@ body {
     margin: 10vh auto auto;
     overflow: hidden;
 
-	/* colors from client/browser/src/global-styles/colors.scss */
+	/* colors from browser/src/global-styles/colors.scss */
     border: 1px solid #2B3750;
     background-color: #1D2535;
     box-shadow: 0 0 8px 0 rgba(0,0,0,.4);
@@ -111,7 +110,7 @@ body {
     .auth-box {
         border: none;
         margin-top: 64px;
-		/* colors from client/browser/src/global-styles/colors.scss */
+		/* colors from browser/src/global-styles/colors.scss */
         background-color: #0e121b;
     }
 }
@@ -132,7 +131,7 @@ a {
     line-height: 20px;
     border: none;
     border-radius: 2px;
-	/* colors from client/browser/src/global-styles/colors.scss */
+	/* colors from browser/src/global-styles/colors.scss */
     background-color: #2b3750;
     margin-bottom: 20px;
     text-decoration: none;
@@ -169,4 +168,3 @@ a:target {
 </div>
 </div>
 `))
-)

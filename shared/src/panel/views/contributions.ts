@@ -1,11 +1,12 @@
 import { Unsubscribable } from 'rxjs'
+import { parseContributionExpressions } from '../../api/client/services/contribution'
 import { ExtensionsControllerProps } from '../../extensions/controller'
 
 export function registerPanelToolbarContributions({
     extensionsController,
 }: ExtensionsControllerProps<'services'>): Unsubscribable {
     return extensionsController.services.contribution.registerContributions({
-        contributions: {
+        contributions: parseContributionExpressions({
             actions: [
                 {
                     id: 'panel.locations.groupByFile',
@@ -14,12 +15,12 @@ export function registerPanelToolbarContributions({
                     command: 'updateConfiguration',
                     commandArguments: [
                         ['panel.locations.groupByFile'],
-                        // tslint:disable-next-line:no-invalid-template-strings
+                        // eslint-disable-next-line no-template-curly-in-string
                         '${!config.panel.locations.groupByFile}',
                         null,
                         'json',
                     ],
-                    // tslint:disable-next-line:no-invalid-template-strings
+                    // eslint-disable-next-line no-template-curly-in-string
                     actionItem: { label: '${config.panel.locations.groupByFile && "Ungroup" || "Group"} by file' },
                 },
             ],
@@ -27,10 +28,10 @@ export function registerPanelToolbarContributions({
                 'panel/toolbar': [
                     {
                         action: 'panel.locations.groupByFile',
-                        when: `panel.locations.hasResults && panel.activeView.hasLocations`,
+                        when: 'panel.locations.hasResults && panel.activeView.hasLocations',
                     },
                 ],
             },
-        },
+        }),
     })
 }

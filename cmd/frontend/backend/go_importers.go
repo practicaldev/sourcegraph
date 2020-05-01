@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/envvar"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/rcache"
-	"github.com/sourcegraph/sourcegraph/pkg/vcs/git"
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/rcache"
+	"github.com/sourcegraph/sourcegraph/internal/vcs/git"
 	"golang.org/x/net/context/ctxhttp"
 )
 
@@ -118,9 +118,6 @@ func listGoPackagesInRepoImprecise(ctx context.Context, repoName api.RepoName) (
 	repo, err := Repos.GetByName(ctx, repoName)
 	if err != nil {
 		return nil, err
-	}
-	if !repo.Enabled {
-		return nil, errors.New("repository is not enabled")
 	}
 	gitRepo, err := CachedGitRepo(ctx, repo)
 	if err != nil {

@@ -1,5 +1,5 @@
 import { Subject } from 'rxjs'
-import { isPromise, isSubscribable, tryCatchPromise } from './util'
+import { isPromiseLike, isSubscribable, tryCatchPromise } from './util'
 
 describe('tryCatchPromise', () => {
     test('returns a resolved promise with the synchronous result', async () =>
@@ -15,19 +15,21 @@ describe('tryCatchPromise', () => {
         })
         let rejected: any
         return p
-            .then(undefined, v => (rejected = v))
+            .then(undefined, v => {
+                rejected = v
+            })
             .then(() => {
                 expect(rejected).toBe(ERROR)
             })
     })
 
     test('returns a rejected promise with the asynchronous error', () => {
-        const p = tryCatchPromise(
-            () => Promise.reject(ERROR) // tslint:disable-line:no-floating-promises
-        )
+        const p = tryCatchPromise(() => Promise.reject(ERROR))
         let rejected: any
         return p
-            .then(undefined, v => (rejected = v))
+            .then(undefined, v => {
+                rejected = v
+            })
             .then(() => {
                 expect(rejected).toBe(ERROR)
             })
@@ -37,16 +39,16 @@ describe('tryCatchPromise', () => {
 describe('isPromise', () => {
     test('returns true for promises', () =>
         expect(
-            isPromise(
+            isPromiseLike(
                 new Promise<any>(() => {
                     /* noop */
                 })
             )
         ).toBe(true))
     test('returns true for non-promises', () => {
-        expect(isPromise(1)).toBe(false)
-        expect(isPromise({ then: 1 })).toBe(false)
-        expect(isPromise(new Subject<any>())).toBe(false)
+        expect(isPromiseLike(1)).toBe(false)
+        expect(isPromiseLike({ then: 1 })).toBe(false)
+        expect(isPromiseLike(new Subject<any>())).toBe(false)
     })
 })
 

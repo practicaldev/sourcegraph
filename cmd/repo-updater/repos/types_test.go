@@ -1,230 +1,534 @@
 package repos
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/jsonc"
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/awscodecommit"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/bitbucketserver"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/github"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/gitlab"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/gitolite"
+	"github.com/sourcegraph/sourcegraph/internal/jsonc"
+	"golang.org/x/time/rate"
 )
 
-func TestExternalService_IncludeExcludeGithubRepos(t *testing.T) {
+func TestExternalService_Exclude(t *testing.T) {
 	now := time.Now()
-	github := ExternalService{
+
+	type testCase struct {
+		name   string
+		svcs   ExternalServices
+		repos  Repos
+		assert ExternalServicesAssertion
+	}
+
+	githubService := ExternalService{
 		Kind:        "GITHUB",
 		DisplayName: "Github",
 		Config: `{
 			// Some comment
 			"url": "https://github.com",
-			"token": "secret"
+			"token": "secret",
+			"repositoryQuery": ["none"]
 		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	gitlabService := ExternalService{
+		Kind:        "GITLAB",
+		DisplayName: "GitLab",
+		Config: `{
+			// Some comment
+			"url": "https://gitlab.com",
+			"token": "secret",
+			"projectQuery": ["none"]
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	bitbucketServerService := ExternalService{
+		Kind:        "BITBUCKETSERVER",
+		DisplayName: "Bitbucket Server",
+		Config: `{
+			// Some comment
+			"url": "https://bitbucketserver.mycorp.com",
+			"username: "admin",
+			"token": "secret",
+			"repositoryQuery": ["none"]
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	awsCodeCommitService := ExternalService{
+		ID:          9,
+		Kind:        "AWSCODECOMMIT",
+		DisplayName: "AWS CodeCommit",
+		Config: `{
+			"region": "us-west-1",
+			"accessKeyID": "secret-accessKeyID",
+			"secretAccessKey": "secret-secretAccessKey",
+			"gitCredentials": {"username": "user", "password": "pw"},
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	gitoliteService := ExternalService{
+		Kind:        "GITOLITE",
+		DisplayName: "Gitolite",
+		Config: `{
+			// Some comment
+			"host": "git@gitolite.mycorp.com",
+			"prefix": "gitolite.mycorp.com/"
+		}`,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	otherService := ExternalService{
+		Kind:        "OTHER",
+		DisplayName: "Other code hosts",
+		Config: formatJSON(t, `{
+			"url": "https://git-host.mycorp.com",
+			"repos": []
+		}`),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 
 	repos := Repos{
 		{
-			Name: "github.com/org/foo",
-			ExternalRepo: api.ExternalRepoSpec{
-				ServiceType: "github",
-				ServiceID:   "https://github.com/",
-				ID:          "foo",
+			Metadata: &github.Repository{
+				ID:            "foo",
+				NameWithOwner: "org/foo",
 			},
 		},
 		{
-			Name: "github.com/org/bar",
-			ExternalRepo: api.ExternalRepoSpec{
-				ServiceType: "gitlab",
-				ServiceID:   "https://gitlab.com/",
-				ID:          "bar",
+			Metadata: &gitlab.Project{
+				ProjectCommon: gitlab.ProjectCommon{
+					ID:                1,
+					PathWithNamespace: "org/foo",
+				},
 			},
 		},
 		{
-			Name: "github.com/org/baz",
-			ExternalRepo: api.ExternalRepoSpec{
-				ServiceType: "github",
-				ServiceID:   "https://github.mycorp.com/",
+			Metadata: &github.Repository{
+				NameWithOwner: "org/baz",
 			},
 		},
-	}
-
-	type testCase struct {
-		method string
-		name   string
-		svc    *ExternalService
-		repos  Repos
-		assert ExternalServicesAssertion
-		err    string
+		{
+			Metadata: &gitlab.Project{
+				ProjectCommon: gitlab.ProjectCommon{
+					PathWithNamespace: "org/baz",
+				},
+			},
+		},
+		{
+			Metadata: &bitbucketserver.Repo{
+				ID:   1,
+				Slug: "foo",
+				Project: &bitbucketserver.Project{
+					Key: "org",
+				},
+			},
+		},
+		{
+			Metadata: &bitbucketserver.Repo{
+				Slug: "baz",
+				Project: &bitbucketserver.Project{
+					Key: "org",
+				},
+			},
+		},
+		{
+			Metadata: &awscodecommit.Repository{
+				ID:   "f001337a-3450-46fd-b7d2-650c0EXAMPLE",
+				Name: "foo",
+			},
+		},
+		{
+			Metadata: &awscodecommit.Repository{
+				ID:   "b4455554-4444-5555-b7d2-888c9EXAMPLE",
+				Name: "baz",
+			},
+		},
+		{
+			Name: "git-host.mycorp.com/org/foo",
+			ExternalRepo: api.ExternalRepoSpec{
+				ID:          "1",
+				ServiceType: "other",
+				ServiceID:   "https://git-host.mycorp.com/",
+			},
+		},
+		{
+			Name: "git-host.mycorp.com/org/baz",
+			ExternalRepo: api.ExternalRepoSpec{
+				ServiceType: "other",
+				ServiceID:   "https://git-host.mycorp.com/",
+			},
+		},
+		{
+			Metadata: &gitolite.Repo{Name: "foo"},
+		},
 	}
 
 	var testCases []testCase
 	{
-		svc := github.With(func(e *ExternalService) {
-			e.Config = formatJSON(t, `
-			{
-				// Some comment
-				"url": "https://github.com",
-				"token": "secret",
-				"exclude": [
-					{"id": "foo"},
-					{"name": "org/BAZ"}
-				]
-			}`)
-		})
-
-		testCases = append(testCases, testCase{
-			method: "exclude",
-			name:   "already excluded repos and non-github repos are ignored",
-			svc:    svc,
-			repos:  repos,
-			assert: Assert.ExternalServicesEqual(svc),
-			err:    "<nil>",
-		})
-	}
-	{
-		svc := ExternalService{Kind: "GITLAB"}
-		testCases = append(testCases, testCase{
-			method: "exclude",
-			name:   "non github external services return an error",
-			svc:    &svc,
-			repos:  repos,
-			assert: Assert.ExternalServicesEqual(&svc),
-			err:    `config: unexpected external service kind "GITLAB"`,
-		})
-	}
-	{
-		svc := github.With(func(e *ExternalService) {
-			e.Config = formatJSON(t, `
-			{
-				// Some comment
-				"url": "https://github.com",
-				"token": "secret",
-				"exclude": [
-					{"name": "org/boo"}
-				]
-			}`)
-		})
-
-		testCases = append(testCases, testCase{
-			method: "exclude",
-			name:   "github repos are excluded",
-			svc:    svc,
-			repos:  repos,
-			assert: Assert.ExternalServicesEqual(svc.With(func(e *ExternalService) {
+		svcs := ExternalServices{
+			githubService.With(func(e *ExternalService) {
 				e.Config = formatJSON(t, `
 				{
 					// Some comment
 					"url": "https://github.com",
 					"token": "secret",
+					"repositoryQuery": ["none"],
 					"exclude": [
-						{"name": "org/boo"},
-						{"id": "foo", "name": "org/foo"},
+						{"id": "foo"},
+						{"name": "org/BAZ"}
+					]
+				}`)
+			}),
+			gitlabService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
+				{
+					// Some comment
+					"url": "https://gitlab.com",
+					"token": "secret",
+					"projectQuery": ["none"],
+					"exclude": [
+						{"id": 1},
 						{"name": "org/baz"}
 					]
 				}`)
-			})),
-			err: `<nil>`,
+			}),
+			bitbucketServerService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
+				{
+					// Some comment
+					"url": "https://bitbucketserver.mycorp.com",
+					"username": "admin",
+					"token": "secret",
+					"repositoryQuery": ["none"],
+					"exclude": [
+						{"id": 1},
+						{"name": "org/baz"}
+					]
+				}`)
+			}),
+			awsCodeCommitService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
+				{
+					// Some comment
+					"region": "us-west-1",
+					"accessKeyID": "secret-accessKeyID",
+					"secretAccessKey": "secret-secretAccessKey",
+					"gitCredentials": {"username": "user", "password": "pw"},
+					"exclude": [
+						{"id": "f001337a-3450-46fd-b7d2-650c0EXAMPLE"},
+						{"name": "baz"}
+					]
+				}`)
+			}),
+			gitoliteService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
+				{
+					// Some comment
+					"host": "git@gitolite.mycorp.com",
+					"prefix": "gitolite.mycorp.com/",
+					"exclude": [
+						{"name": "foo"}
+					]
+				}`)
+			}),
+			&otherService,
+		}
+
+		testCases = append(testCases, testCase{
+			name:   "already excluded repos are ignored",
+			svcs:   svcs,
+			repos:  repos,
+			assert: Assert.ExternalServicesEqual(svcs...),
 		})
 	}
 	{
-		svc := github.With(func(e *ExternalService) {
-			e.Config = formatJSON(t, `
+		svcs := ExternalServices{
+			githubService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
 				{
 					// Some comment
 					"url": "https://github.com",
 					"token": "secret",
+					"repositoryQuery": ["none"],
+					"exclude": [
+						{"name": "org/boo"},
+					]
+				}`)
+			}),
+			gitlabService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
+				{
+					// Some comment
+					"url": "https://gitlab.com",
+					"token": "secret",
+					"projectQuery": ["none"],
+					"exclude": [
+						{"name": "org/boo"},
+					]
+				}`)
+			}),
+			bitbucketServerService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
+				{
+					// Some comment
+					"url": "https://gitlab.com",
+					"username": "admin",
+					"token": "secret",
+					"repositoryQuery": ["none"],
+					"exclude": [
+						{"name": "org/boo"},
+					]
+				}`)
+			}),
+			awsCodeCommitService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
+				{
+					// Some comment
+					"region": "us-west-1",
+					"accessKeyID": "secret-accessKeyID",
+					"secretAccessKey": "secret-secretAccessKey",
+					"gitCredentials": {"username": "user", "password": "pw"},
+					"exclude": [
+						{"name": "boo"}
+					]
+				}`)
+			}),
+			gitoliteService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
+				{
+					// Some comment
+					"host": "git@gitolite.mycorp.com",
+					"prefix": "gitolite.mycorp.com/",
+					"exclude": [
+						{"name": "boo"}
+					]
+				}`)
+			}),
+			otherService.With(func(e *ExternalService) {
+				e.Config = formatJSON(t, `
+				{
+					"url": "https://git-host.mycorp.com",
 					"repos": [
-						"org/FOO",
+						"org/foo",
+						"org/boo",
 						"org/baz"
 					]
 				}`)
-		})
+			}),
+		}
 
 		testCases = append(testCases, testCase{
-			method: "include",
-			name:   "already included repos and non-github repos are ignored",
-			svc:    svc,
-			repos:  repos,
-			assert: Assert.ExternalServicesEqual(svc),
-			err:    "<nil>",
-		})
-	}
-	{
-		svc := ExternalService{Kind: "GITLAB"}
-		testCases = append(testCases, testCase{
-			method: "include",
-			name:   "non github external services return an error",
-			svc:    &svc,
-			repos:  repos,
-			assert: Assert.ExternalServicesEqual(&svc),
-			err:    `config: unexpected external service kind "GITLAB"`,
-		})
-	}
-	{
-		svc := github.With(func(e *ExternalService) {
-			e.Config = formatJSON(t, `
-				{
-					// Some comment
-					"url": "https://github.com",
-					"token": "secret",
-					"repos": [
-						"org/boo"
-					]
-				}`)
-		})
-
-		testCases = append(testCases, testCase{
-			method: "include",
-			name:   "github repos are included",
-			svc:    svc,
-			repos:  repos,
-			assert: Assert.ExternalServicesEqual(svc.With(func(e *ExternalService) {
-				e.Config = formatJSON(t, `
+			name:  "repos are excluded",
+			svcs:  svcs,
+			repos: repos,
+			assert: Assert.ExternalServicesEqual(
+				githubService.With(func(e *ExternalService) {
+					e.Config = formatJSON(t, `
 					{
 						// Some comment
 						"url": "https://github.com",
 						"token": "secret",
-						"repos": [
-							"org/boo",
-							"org/foo",
-							"org/baz"
+						"repositoryQuery": ["none"],
+						"exclude": [
+							{"name": "org/boo"},
+							{"id": "foo", "name": "org/foo"},
+							{"name": "org/baz"}
 						]
 					}`)
-			})),
-			err: `<nil>`,
+				}),
+				gitlabService.With(func(e *ExternalService) {
+					e.Config = formatJSON(t, `
+					{
+						// Some comment
+						"url": "https://gitlab.com",
+						"token": "secret",
+						"projectQuery": ["none"],
+						"exclude": [
+							{"name": "org/boo"},
+							{"id": 1, "name": "org/foo"},
+							{"name": "org/baz"}
+						]
+					}`)
+				}),
+				bitbucketServerService.With(func(e *ExternalService) {
+					e.Config = formatJSON(t, `
+					{
+						// Some comment
+						"url": "https://gitlab.com",
+						"username": "admin",
+						"token": "secret",
+						"repositoryQuery": ["none"],
+						"exclude": [
+							{"name": "org/boo"},
+							{"id": 1, "name": "org/foo"},
+							{"name": "org/baz"}
+						]
+					}`)
+				}),
+				awsCodeCommitService.With(func(e *ExternalService) {
+					e.Config = formatJSON(t, `
+					{
+						// Some comment
+						"region": "us-west-1",
+						"accessKeyID": "secret-accessKeyID",
+						"secretAccessKey": "secret-secretAccessKey",
+						"gitCredentials": {"username": "user", "password": "pw"},
+						"exclude": [
+							{"name": "boo"},
+							{"id": "f001337a-3450-46fd-b7d2-650c0EXAMPLE", "name": "foo"},
+							{"id": "b4455554-4444-5555-b7d2-888c9EXAMPLE", "name": "baz"}
+						]
+					}`)
+				}),
+				gitoliteService.With(func(e *ExternalService) {
+					e.Config = formatJSON(t, `
+					{
+						// Some comment
+						"host": "git@gitolite.mycorp.com",
+						"prefix": "gitolite.mycorp.com/",
+						"exclude": [
+							{"name": "boo"},
+							{"name": "foo"}
+						]
+					}`)
+				}),
+				otherService.With(func(e *ExternalService) {
+					e.Config = formatJSON(t, `
+					{
+						"url": "https://git-host.mycorp.com",
+						"repos": [
+							"org/boo"
+						]
+					}`)
+				}),
+			),
 		})
 	}
 
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			svc, repos := tc.svc.Clone(), tc.repos.Clone()
+			svcs, repos := tc.svcs.Clone(), tc.repos.Clone()
 
 			var err error
-			switch tc.method {
-			case "include":
-				err = svc.IncludeGithubRepos(repos...)
-			case "exclude":
-				err = svc.ExcludeGithubRepos(repos...)
-			}
-
-			if have, want := fmt.Sprint(err), tc.err; have != want {
-				t.Errorf("error:\nhave: %q\nwant: %q", have, want)
+			for _, svc := range svcs {
+				if err = svc.Exclude(repos...); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			if tc.assert != nil {
-				tc.assert(t, ExternalServices{svc})
+				tc.assert(t, svcs)
 			}
 		})
 	}
 }
 
+// Our uses of pick happen from iterating through a map. So we can't guarantee
+// that we test both pick(a, b) and pick(b, a) without writing this specific
+// test.
+func TestPick(t *testing.T) {
+	eid := func(id string) api.ExternalRepoSpec {
+		return api.ExternalRepoSpec{
+			ID:          id,
+			ServiceType: "fake",
+			ServiceID:   "https://fake.com",
+		}
+	}
+	a := &Repo{Name: "bar", ExternalRepo: eid("1")}
+	b := &Repo{Name: "bar", ExternalRepo: eid("2")}
+
+	for _, args := range [][2]*Repo{{a, b}, {b, a}} {
+		keep, discard := pick(args[0], args[1])
+		if keep != a || discard != b {
+			t.Errorf("unexpected pick(%v, %v)", args[0], args[1])
+		}
+	}
+}
+
 func formatJSON(t testing.TB, s string) string {
-	formatted, err := jsonc.Format(s, true, 2)
+	formatted, err := jsonc.Format(s, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	return formatted
+}
+
+func TestRateLimiterRegistry(t *testing.T) {
+	r := &RateLimiterRegistry{
+		rateLimiters: make(map[int64]*rate.Limiter),
+	}
+
+	l := r.GetRateLimiter(1)
+	if l == nil {
+		t.Fatalf("Expected a limiter")
+	}
+	expectedLimit := rate.Inf
+	if l.Limit() != expectedLimit {
+		t.Fatalf("Expected limit %f, got %f", expectedLimit, l.Limit())
+	}
+
+	now := time.Now()
+	s := api.ExternalService{
+		ID:          1,
+		Kind:        "GitLab",
+		DisplayName: "GitLab",
+		Config:      "",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		DeletedAt:   nil,
+	}
+	err := r.HandleExternalServiceSync(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// We should have default limit
+	l = r.GetRateLimiter(1)
+	if l == nil {
+		t.Fatalf("Expected a limiter")
+	}
+	expectedLimit = rate.Limit(10)
+	if l.Limit() != expectedLimit {
+		t.Fatalf("Expected limit %f, got %f", expectedLimit, l.Limit())
+	}
+
+	// Add config
+	s.Config = `
+{
+  "RateLimit": {
+    "Enabled": true,
+    "RequestsPerHour": 3600,
+  }
+}
+`
+	err = r.HandleExternalServiceSync(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// We should have new limit
+	l = r.GetRateLimiter(1)
+	if l == nil {
+		t.Fatalf("Expected a limiter")
+	}
+	expectedLimit = rate.Limit(1)
+	if l.Limit() != expectedLimit {
+		t.Fatalf("Expected limit %f, got %f", expectedLimit, l.Limit())
+	}
 }

@@ -1,34 +1,35 @@
 package httpapi
 
 import (
-	"fmt"
-	"log"
+	"encoding/json"
 	"net/http"
-	"net/http/httputil"
 
-	"github.com/gorilla/mux"
+	"github.com/inconshreveable/log15"
 
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/envvar"
-	"github.com/sourcegraph/sourcegraph/pkg/env"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/pkg/usagestatsdeprecated"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/usagestats"
+	"github.com/sourcegraph/sourcegraph/internal/eventlogger"
 )
 
 var telemetryHandler http.Handler
 
 func init() {
-	if envvar.SourcegraphDotComMode() {
-		telemetryHandler = &httputil.ReverseProxy{
-			Director: func(req *http.Request) {
-				req.URL.Scheme = "https"
-				req.URL.Host = "sourcegraph-logging.telligentdata.com"
-				req.Host = "sourcegraph-logging.telligentdata.com"
-				req.URL.Path = "/" + mux.Vars(req)["TelemetryPath"]
-			},
-			ErrorLog: log.New(env.DebugOut, "telemetry proxy: ", log.LstdFlags),
+	telemetryHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var tr eventlogger.TelemetryRequest
+		err := json.NewDecoder(r.Body).Decode(&tr)
+		if err != nil {
+			log15.Error("telemetryHandler: Decode", "error", err)
 		}
-	} else {
-		telemetryHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintln(w, "event-level telemetry is disabled")
-			w.WriteHeader(http.StatusNoContent)
-		})
-	}
+		err = usagestats.LogBackendEvent(tr.UserID, tr.EventName, tr.Argument)
+		if err != nil {
+			log15.Error("telemetryHandler: usagestats.LogBackendEvent", "error", err)
+		}
+		if tr.UserID != 0 && tr.EventName == "SavedSearchEmailNotificationSent" {
+			err = usagestatsdeprecated.LogActivity(true, tr.UserID, "", "STAGEVERIFY")
+			if err != nil {
+				log15.Error("telemetryHandler: usagestats.LogBackendEvent", "error", err)
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 }

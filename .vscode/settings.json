@@ -1,29 +1,73 @@
 {
-  "tslint.nodePath": "./node_modules",
   "search.exclude": {
     "**/node_modules": true,
     "**/bower_components": true,
     "dist": true,
-    "ui/assets": true
+    "ui/assets": true,
+    "browser/build": true,
+    "**/coverage": true,
+    "**/out": true,
+    "**/__fixtures__/**": true,
+    "**/.cache": true,
+    "**/.nyc_output": true,
   },
   "files.associations": {
     "**/dev/critical-config.json": "jsonc",
-    "**/dev/site-config.json": "jsonc"
+    "**/dev/site-config.json": "jsonc",
+    "**/.mocharc.json": "jsonc",
   },
   "json.schemas": [
     {
       "fileMatch": ["dev/critical-config.json"],
-      "url": "/schema/critical.schema.json"
+      "url": "/schema/critical/critical.schema.json",
     },
     {
       "fileMatch": ["dev/site-config.json"],
-      "url": "/schema/site.schema.json"
-    }
+      "url": "/schema/site.schema.json",
+    },
   ],
   "editor.formatOnSave": true,
-  "typescript.tsdk": "node_modules/typescript/lib",
   "go.docsTool": "gogetdoc",
   "jest.pathToJest": "yarn -s test",
   "jest.showCoverageOnLoad": false,
-  "jest.autoEnable": false // until we confirm people like it
+  "jest.autoEnable": false, // until we confirm people like it
+  "gulp.autoDetect": "off",
+  "npm.packageManager": "yarn",
+  "npm.runSilent": true,
+  "typescript.preferences.quoteStyle": "single",
+  "typescript.preferences.importModuleSpecifier": "relative",
+  "typescript.format.semicolons": "remove",
+  "typescript.tsc.autoDetect": "off",
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "eslint.packageManager": "yarn",
+  "eslint.lintTask.enable": false,
+  "eslint.validate": ["javascript", "javascriptreact", "typescript", "typescriptreact"],
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true,
+  },
+  "eslint.options": { "cache": true },
+  "eslint.workingDirectories": [
+    {
+      "directory": "dev/release",
+      "changeProcessCWD": true,
+    },
+    {
+      "directory": "web",
+      "changeProcessCWD": true,
+    },
+    {
+      "directory": "browser",
+      "changeProcessCWD": true,
+    },
+    {
+      "directory": "shared",
+      "changeProcessCWD": true,
+    },
+    {
+      "directory": "cmd/precise-code-intel",
+      "changeProcessCWD": true,
+    },
+  ],
+  "go.lintTool": "golangci-lint",
+  "shellformat.flag": "-i 2 -ci",
 }

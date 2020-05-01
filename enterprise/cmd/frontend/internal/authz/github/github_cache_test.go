@@ -2,91 +2,87 @@ package github
 
 import (
 	"context"
-	"reflect"
 	"testing"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
-	"github.com/sergi/go-diff/diffmatchpatch"
+	"github.com/google/go-cmp/cmp"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/authz"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/extsvc/github"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/github"
 )
 
 // TestProvider_RepoPerms_cacheTTL tests that cache entries are invalidated after the cache TTL
 // changes.
 func TestProvider_RepoPerms_cacheTTL(t *testing.T) {
-	githubMock := newMockGitHub([]*github.Repository{
-		{ID: "u0/r0", IsPrivate: true},
-		{ID: "u1/r1", IsPrivate: true},
-		{ID: "u1/public"},
-	}, map[string][]string{
-		"t0": {"u0/r0"},
-		"t1": {"u1/r1"},
-	})
-	github.GetRepositoryByNodeIDMock = githubMock.GetRepositoryByNodeID
-	defer func() { github.GetRepositoryByNodeIDMock = nil }()
+	cacheMisses := 0
+	mockClient := &mockClient{
+		MockGetRepositoriesByNodeIDFromAPI: func(ctx context.Context, nodeIDs []string) (map[string]*github.Repository, error) {
+			cacheMisses++
+			return map[string]*github.Repository{
+				"u1/public": {},
+				"u0/r0":     {},
+			}, nil
+		},
+	}
+	mockClient.MockWithToken = func(token string) client {
+		return mockClient
+	}
 
-	provider := NewProvider(mustURL(t, "https://github.com"), "base-token", 3*time.Hour, make(authz.MockCache))
+	p := NewProvider(mustURL(t, "https://github.com"), "base-token", 3*time.Hour, make(authz.MockCache))
+	p.client = mockClient
+
 	ctx := context.Background()
 
-	githubMock.getRepositoryByNodeIDCount = 0
 	userAccount := ua("u0", "t0")
-	repos := map[authz.Repo]struct{}{
-		rp("r0", "u0/r0", "https://github.com/"):     {},
-		rp("r1", "u1/r1", "https://github.com/"):     {},
-		rp("r2", "u1/public", "https://github.com/"): {},
+	repos := []*types.Repo{
+		rp("r0", "u0/r0", "https://github.com/"),
+		rp("r1", "u1/r1", "https://github.com/"),
+		rp("r2", "u1/public", "https://github.com/"),
 	}
-	wantPerms := map[api.RepoName]map[authz.Perm]bool{
-		"r0": readPerms,
-		"r1": noPerms,
-		"r2": readPerms,
+	wantPerms := []authz.RepoPerms{
+		{Repo: repos[0], Perms: authz.Read},
+		{Repo: repos[1], Perms: authz.None},
+		{Repo: repos[2], Perms: authz.Read},
 	}
 	{
-		gotPerms, gotErr := provider.RepoPerms(ctx, userAccount, repos)
+		perms, err := p.RepoPerms(ctx, userAccount, repos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(wantPerms, perms); diff != "" {
+			t.Fatal(diff)
+		}
+		if cacheMisses != 1 {
+			t.Errorf("expected 1 cache misses, but got %d", cacheMisses)
+		}
+		cacheMisses = 0
+	}
+	{
+		perms, gotErr := p.RepoPerms(ctx, userAccount, repos)
 		if gotErr != nil {
 			t.Fatal(gotErr)
 		}
-		if !reflect.DeepEqual(gotPerms, wantPerms) {
-			dmp := diffmatchpatch.New()
-			t.Errorf("wantPerms != gotPerms:\n%s",
-				dmp.DiffPrettyText(dmp.DiffMain(spew.Sdump(wantPerms), spew.Sdump(gotPerms), false)))
+		if diff := cmp.Diff(wantPerms, perms); diff != "" {
+			t.Fatal(diff)
 		}
-		if want, got := 3, githubMock.getRepositoryByNodeIDCount; want != got {
-			t.Errorf("expected %d cache misses, but got %d", want, got)
+		if cacheMisses != 0 {
+			t.Errorf("expected 0 cache misses, but got %d", cacheMisses)
 		}
-		githubMock.getRepositoryByNodeIDCount = 0
-	}
-	{
-		gotPerms, gotErr := provider.RepoPerms(ctx, userAccount, repos)
-		if gotErr != nil {
-			t.Fatal(gotErr)
-		}
-		if !reflect.DeepEqual(gotPerms, wantPerms) {
-			dmp := diffmatchpatch.New()
-			t.Errorf("wantPerms != gotPerms:\n%s",
-				dmp.DiffPrettyText(dmp.DiffMain(spew.Sdump(wantPerms), spew.Sdump(gotPerms), false)))
-		}
-		if want, got := 0, githubMock.getRepositoryByNodeIDCount; want != got {
-			t.Errorf("expected %d cache misses, but got %d", want, got)
-		}
-		githubMock.getRepositoryByNodeIDCount = 0
+		cacheMisses = 0
 	}
 
-	provider.cacheTTL = 1 * time.Hour // lower cache TTL
+	p.cacheTTL = 1 * time.Hour // lower cache TTL
 	{
-		gotPerms, gotErr := provider.RepoPerms(ctx, userAccount, repos)
+		perms, gotErr := p.RepoPerms(ctx, userAccount, repos)
 		if gotErr != nil {
 			t.Fatal(gotErr)
 		}
-		if !reflect.DeepEqual(gotPerms, wantPerms) {
-			dmp := diffmatchpatch.New()
-			t.Errorf("wantPerms != gotPerms:\n%s",
-				dmp.DiffPrettyText(dmp.DiffMain(spew.Sdump(wantPerms), spew.Sdump(gotPerms), false)))
+		if diff := cmp.Diff(wantPerms, perms); diff != "" {
+			t.Fatal(diff)
 		}
-		if want, got := 3, githubMock.getRepositoryByNodeIDCount; want != got {
-			t.Errorf("expected %d cache misses, but got %d", want, got)
+		if cacheMisses != 1 {
+			t.Errorf("expected 1 cache misses, but got %d", cacheMisses)
 		}
-		githubMock.getRepositoryByNodeIDCount = 0
+		cacheMisses = 0
 	}
 }

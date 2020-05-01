@@ -3,9 +3,9 @@ import CloseIcon from 'mdi-react/CloseIcon'
 import * as React from 'react'
 import { Observable, Subscription } from 'rxjs'
 import { map } from 'rxjs/operators'
-import { PanelViewWithComponent, ViewProviderRegistrationOptions } from '../../../shared/src/api/client/services/view'
-import { ContributableMenu, ContributableViewContainer } from '../../../shared/src/api/protocol/contribution'
-import { ExtensionsControllerProps } from '../../../shared/src/extensions/controller'
+import { PanelViewWithComponent, PanelViewProviderRegistrationOptions } from '../api/client/services/panelViews'
+import { ContributableMenu, ContributableViewContainer } from '../api/protocol/contribution'
+import { ExtensionsControllerProps } from '../extensions/controller'
 import { ActionsNavItems } from '../actions/ActionsNavItems'
 import { ActivationProps } from '../components/activation/Activation'
 import { FetchFileCtx } from '../components/CodeExcerpt'
@@ -13,20 +13,27 @@ import { Resizable } from '../components/Resizable'
 import { Spacer, Tab, TabsWithURLViewStatePersistence } from '../components/Tabs'
 import { PlatformContextProps } from '../platform/context'
 import { SettingsCascadeProps } from '../settings/settings'
+import { TelemetryProps } from '../telemetry/telemetryService'
 import { EmptyPanelView } from './views/EmptyPanelView'
 import { PanelView } from './views/PanelView'
+import { ThemeProps } from '../theme'
 
-interface Props extends ExtensionsControllerProps, PlatformContextProps, SettingsCascadeProps, ActivationProps {
+interface Props
+    extends ExtensionsControllerProps,
+        PlatformContextProps,
+        SettingsCascadeProps,
+        ActivationProps,
+        TelemetryProps,
+        ThemeProps {
     location: H.Location
     history: H.History
     repoName?: string
-    isLightTheme: boolean
     fetchHighlightedFileLines: (ctx: FetchFileCtx, force?: boolean) => Observable<string[]>
 }
 
 interface State {
     /** Panel views contributed by extensions. */
-    panelViews?: (PanelViewWithComponent & Pick<ViewProviderRegistrationOptions, 'id'>)[] | null
+    panelViews?: (PanelViewWithComponent & Pick<PanelViewProviderRegistrationOptions, 'id'>)[] | null
 }
 
 /**
@@ -40,7 +47,7 @@ interface PanelItem extends Tab<string> {
     priority: number
 
     /** The content element to display when the tab is active. */
-    element: React.ReactElement<any>
+    element: JSX.Element
 
     /**
      * Whether this panel contains a list of locations (from a location provider). This value is
@@ -63,8 +70,8 @@ export class Panel extends React.PureComponent<Props, State> {
 
     public componentDidMount(): void {
         this.subscriptions.add(
-            this.props.extensionsController.services.views
-                .getViews(ContributableViewContainer.Panel)
+            this.props.extensionsController.services.panelViews
+                .getPanelViews(ContributableViewContainer.Panel)
                 .pipe(map(panelViews => ({ panelViews })))
                 .subscribe(stateUpdate => this.setState(stateUpdate))
         )
@@ -102,6 +109,7 @@ export class Panel extends React.PureComponent<Props, State> {
                             <>
                                 <Spacer />
                                 <button
+                                    type="button"
                                     onClick={this.onDismiss}
                                     className="btn btn-icon tab-bar__end-fragment-other-element"
                                     data-tooltip="Close"
@@ -113,15 +121,18 @@ export class Panel extends React.PureComponent<Props, State> {
                         toolbarFragment={
                             <ActionsNavItems
                                 {...this.props}
-                                listClass="w-100 justify-content-end"
+                                // TODO remove references to Bootstrap from shared, get class name from prop
+                                // This is okay for now because the Panel is currently only used in the webapp
+                                listClass="nav w-100 justify-content-end"
                                 actionItemClass="nav-link"
+                                actionItemIconClass="icon-inline"
                                 menu={ContributableMenu.PanelToolbar}
                                 scope={
                                     activePanelViewID !== undefined
                                         ? {
                                               type: 'panelView',
                                               id: activePanelViewID,
-                                              hasLocations: Boolean(activePanelView && activePanelView.hasLocations),
+                                              hasLocations: Boolean(activePanelView?.hasLocations),
                                           }
                                         : undefined
                                 }
@@ -132,7 +143,7 @@ export class Panel extends React.PureComponent<Props, State> {
                         tabClassName="tab-bar__tab--h5like"
                         location={this.props.location}
                     >
-                        {items && items.map(({ id, element }) => React.cloneElement(element, { key: id }))}
+                        {items?.map(({ id, element }) => React.cloneElement(element, { key: id }))}
                     </TabsWithURLViewStatePersistence>
                 ) : (
                     <EmptyPanelView />

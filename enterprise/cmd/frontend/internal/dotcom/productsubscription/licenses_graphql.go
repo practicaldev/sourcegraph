@@ -11,7 +11,7 @@ import (
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/graphqlbackend"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/graphqlbackend/graphqlutil"
 	"github.com/sourcegraph/sourcegraph/enterprise/cmd/frontend/internal/licensing"
-	"github.com/sourcegraph/sourcegraph/enterprise/pkg/license"
+	"github.com/sourcegraph/sourcegraph/enterprise/internal/license"
 )
 
 func init() {
@@ -89,8 +89,8 @@ func (r *productLicense) Info() (*graphqlbackend.ProductLicenseInfo, error) {
 
 func (r *productLicense) LicenseKey() string { return r.v.LicenseKey }
 
-func (r *productLicense) CreatedAt() string {
-	return r.v.CreatedAt.Format(time.RFC3339)
+func (r *productLicense) CreatedAt() graphqlbackend.DateTime {
+	return graphqlbackend.DateTime{Time: r.v.CreatedAt}
 }
 
 func generateProductLicenseForSubscription(ctx context.Context, subscriptionID string, input *graphqlbackend.ProductLicenseInput) (id string, err error) {

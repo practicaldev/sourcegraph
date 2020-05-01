@@ -1,17 +1,15 @@
+import { Observable } from 'rxjs'
+import { Omit } from 'utility-types'
 import { createAggregateError } from '../util/errors'
+import { checkOk } from '../backend/fetch'
 import * as GQL from './schema'
-
-export const graphQLContent = Symbol('graphQLContent')
-export interface GraphQLDocument {
-    [graphQLContent]: string
-}
+import { fromFetch } from './fromFetch'
 
 /**
  * Use this template string tag for all GraphQL queries.
  */
-export const gql = (template: TemplateStringsArray, ...substitutions: any[]): GraphQLDocument => ({
-    [graphQLContent]: String.raw(template, ...substitutions.map(s => s[graphQLContent] || s)),
-})
+export const gql = (template: TemplateStringsArray, ...substitutions: any[]): string =>
+    String.raw(template, ...substitutions)
 
 export interface SuccessGraphQLResult<T extends GQL.IQuery | GQL.IMutation> {
     data: T
@@ -27,14 +25,14 @@ export type GraphQLResult<T extends GQL.IQuery | GQL.IMutation> = SuccessGraphQL
 /**
  * Guarantees that the GraphQL query resulted in an error.
  */
-export function isGraphQLError<T extends GQL.IQuery | GQL.IMutation>(
+export function isErrorGraphQLResult<T extends GQL.IQuery | GQL.IMutation>(
     result: GraphQLResult<T>
 ): result is ErrorGraphQLResult {
     return !!(result as ErrorGraphQLResult).errors && (result as ErrorGraphQLResult).errors.length > 0
 }
 
 export function dataOrThrowErrors<T extends GQL.IQuery | GQL.IMutation>(result: GraphQLResult<T>): T {
-    if (isGraphQLError(result)) {
+    if (isErrorGraphQLResult(result)) {
         throw createAggregateError(result.errors)
     }
     return result.data
@@ -51,3 +49,28 @@ export const createInvalidGraphQLMutationResponseError = (queryName: string): Gr
     Object.assign(new Error(`Invalid GraphQL response: mutation ${queryName}`), {
         queryName,
     })
+
+export interface GraphQLRequestOptions extends Omit<RequestInit, 'method' | 'body'> {
+    baseUrl?: string
+}
+
+export function requestGraphQL<T extends GQL.IQuery | GQL.IMutation>({
+    request,
+    variables = {},
+    baseUrl = '',
+    ...options
+}: GraphQLRequestOptions & {
+    request: string
+    variables?: {}
+}): Observable<GraphQLResult<T>> {
+    const nameMatch = request.match(/^\s*(?:query|mutation)\s+(\w+)/)
+    return fromFetch(
+        `${baseUrl}/.api/graphql${nameMatch ? '?' + nameMatch[1] : ''}`,
+        {
+            ...options,
+            method: 'POST',
+            body: JSON.stringify({ query: request, variables }),
+        },
+        response => checkOk(response).json()
+    )
+}

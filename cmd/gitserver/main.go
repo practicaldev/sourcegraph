@@ -2,6 +2,7 @@
 package main // import "github.com/sourcegraph/sourcegraph/cmd/gitserver"
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -11,21 +12,22 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/opentracing-contrib/go-stdlib/nethttp"
-	opentracing "github.com/opentracing/opentracing-go"
-	log15 "gopkg.in/inconshreveable/log15.v2"
+	"github.com/pkg/errors"
+
+	"github.com/inconshreveable/log15"
 
 	"github.com/sourcegraph/sourcegraph/cmd/gitserver/server"
-	"github.com/sourcegraph/sourcegraph/pkg/debugserver"
-	"github.com/sourcegraph/sourcegraph/pkg/env"
-	"github.com/sourcegraph/sourcegraph/pkg/tracer"
+	"github.com/sourcegraph/sourcegraph/internal/debugserver"
+	"github.com/sourcegraph/sourcegraph/internal/env"
+	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
+	"github.com/sourcegraph/sourcegraph/internal/tracer"
 )
-
-const janitorInterval = 24 * time.Hour
 
 var (
 	reposDir          = env.Get("SRC_REPOS_DIR", "/data/repos", "Root dir containing repos.")
 	runRepoCleanup, _ = strconv.ParseBool(env.Get("SRC_RUN_REPO_CLEANUP", "", "Periodically remove inactive repositories."))
+	wantPctFree       = env.Get("SRC_REPOS_DESIRED_PERCENT_FREE", "10", "Target percentage of free space on disk.")
+	janitorInterval   = env.Get("SRC_REPOS_JANITOR_INTERVAL", "1m", "Interval between cleanup runs")
 )
 
 func main() {
@@ -40,29 +42,38 @@ func main() {
 		log.Fatalf("failed to create SRC_REPOS_DIR: %s", err)
 	}
 
+	wantPctFree2, err := parsePercent(wantPctFree)
+	if err != nil {
+		log.Fatalf("parsing $SRC_REPOS_DESIRED_PERCENT_FREE: %v", err)
+	}
 	gitserver := server.Server{
 		ReposDir:                reposDir,
 		DeleteStaleRepositories: runRepoCleanup,
+		DesiredPercentFree:      wantPctFree2,
 	}
 	gitserver.RegisterMetrics()
 
 	if tmpDir, err := gitserver.SetupAndClearTmp(); err != nil {
 		log.Fatalf("failed to setup temporary directory: %s", err)
 	} else {
-		// Additionally set TMP_DIR so other temporary files we may accidently
+		// Additionally set TMP_DIR so other temporary files we may accidentally
 		// create are on the faster RepoDir mount.
 		os.Setenv("TMP_DIR", tmpDir)
 	}
 
 	// Create Handler now since it also initializes state
-	handler := nethttp.Middleware(opentracing.GlobalTracer(), gitserver.Handler())
+	handler := ot.Middleware(gitserver.Handler())
 
 	go debugserver.Start()
 
+	janitorInterval2, err := time.ParseDuration(janitorInterval)
+	if err != nil {
+		log.Fatalf("parsing $SRC_REPOS_JANITOR_INTERVAL: %v", err)
+	}
 	go func() {
 		for {
 			gitserver.Janitor()
-			time.Sleep(janitorInterval)
+			time.Sleep(janitorInterval2)
 		}
 	}()
 
@@ -98,4 +109,18 @@ func main() {
 	// The most important thing this does is kill all our clones. If we just
 	// shutdown they will be orphaned and continue running.
 	gitserver.Stop()
+}
+
+func parsePercent(s string) (int, error) {
+	p, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, errors.Wrap(err, "converting string to int")
+	}
+	if p < 0 {
+		return 0, fmt.Errorf("negative value given for percentage: %d", p)
+	}
+	if p > 100 {
+		return 0, fmt.Errorf("excessively high value given for percentage: %d", p)
+	}
+	return p, nil
 }

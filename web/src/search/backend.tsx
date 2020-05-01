@@ -1,29 +1,62 @@
-import { Observable } from 'rxjs'
-import { catchError, map, mergeMap, switchMap } from 'rxjs/operators'
+import { Observable, of, combineLatest, defer } from 'rxjs'
+import { catchError, map, switchMap, publishReplay, refCount } from 'rxjs/operators'
 import { ExtensionsControllerProps } from '../../../shared/src/extensions/controller'
-import { gql } from '../../../shared/src/graphql/graphql'
+import { dataOrThrowErrors, gql } from '../../../shared/src/graphql/graphql'
 import * as GQL from '../../../shared/src/graphql/schema'
 import { asError, createAggregateError, ErrorLike } from '../../../shared/src/util/errors'
 import { memoizeObservable } from '../../../shared/src/util/memoizeObservable'
 import { mutateGraphQL, queryGraphQL } from '../backend/graphql'
+import { USE_CODEMOD } from '../enterprise/codemod'
+import { SearchSuggestion } from '../../../shared/src/search/suggestions'
+
+const genericSearchResultInterfaceFields = gql`
+  __typename
+  label {
+      html
+  }
+  url
+  icon
+  detail {
+      html
+  }
+  matches {
+      url
+      body {
+          text
+          html
+      }
+      highlights {
+          line
+          character
+          length
+      }
+  }
+`
 
 export function search(
     query: string,
+    version: string,
+    patternType: GQL.SearchPatternType,
     { extensionsController }: ExtensionsControllerProps<'services'>
 ): Observable<GQL.ISearchResults | ErrorLike> {
     /**
      * Emits whenever a search is executed, and whenever an extension registers a query transformer.
      */
     return extensionsController.services.queryTransformer.transformQuery(query).pipe(
-        switchMap(query =>
-            queryGraphQL(
+        switchMap(query => {
+            const codemodActive = USE_CODEMOD
+                ? `... on CodemodResult {
+                ${genericSearchResultInterfaceFields}
+            }`
+                : ''
+            return queryGraphQL(
                 gql`
-                    query Search($query: String!) {
-                        search(query: $query) {
+                    query Search($query: String!, $version: SearchVersion!, $patternType: SearchPatternType!) {
+                        search(query: $query, version: $version, patternType: $patternType) {
                             results {
                                 __typename
                                 limitHit
-                                resultCount
+                                matchCount
                                 approximateResultCount
                                 missing {
                                     name
@@ -31,6 +64,7 @@ export function search(
                                 cloning {
                                     name
                                 }
+                                repositoriesCount
                                 timedout {
                                     name
                                 }
@@ -43,33 +77,13 @@ export function search(
                                     kind
                                 }
                                 results {
+                                    __typename
                                     ... on Repository {
-                                        __typename
                                         id
                                         name
-                                        url
-                                        label {
-                                            html
-                                        }
-                                        icon
-                                        detail {
-                                            html
-                                        }
-                                        matches {
-                                            url
-                                            body {
-                                                text
-                                                html
-                                            }
-                                            highlights {
-                                                line
-                                                character
-                                                length
-                                            }
-                                        }
+                                        ${genericSearchResultInterfaceFields}
                                     }
                                     ... on FileMatch {
-                                        __typename
                                         file {
                                             path
                                             url
@@ -80,6 +94,23 @@ export function search(
                                         repository {
                                             name
                                             url
+                                        }
+                                        revSpec {
+                                            __typename
+                                            ... on GitRef {
+                                                displayName
+                                                url
+                                            }
+                                            ... on GitRevSpecExpr {
+                                                expr
+                                                object { commit { url } }
+                                            }
+                                            ... on GitObject {
+                                                abbreviatedOID
+                                                commit {
+                                                    url
+                                                }
+                                            }
                                         }
                                         limitHit
                                         symbols {
@@ -95,28 +126,9 @@ export function search(
                                         }
                                     }
                                     ... on CommitSearchResult {
-                                        __typename
-                                        label {
-                                            html
-                                        }
-                                        url
-                                        icon
-                                        detail {
-                                            html
-                                        }
-                                        matches {
-                                            url
-                                            body {
-                                                text
-                                                html
-                                            }
-                                            highlights {
-                                                line
-                                                character
-                                                length
-                                            }
-                                        }
+                                        ${genericSearchResultInterfaceFields}
                                     }
+                                    ${codemodActive}
                                 }
                                 alert {
                                     title
@@ -131,7 +143,7 @@ export function search(
                         }
                     }
                 `,
-                { query }
+                { query, version, patternType }
             ).pipe(
                 map(({ data, errors }) => {
                     if (!data || !data.search || !data.search.results) {
@@ -141,79 +153,81 @@ export function search(
                 }),
                 catchError(error => [asError(error)])
             )
-        )
-    )
-}
-
-export function fetchSearchResultStats(query: string): Observable<GQL.ISearchResultsStats> {
-    return queryGraphQL(
-        gql`
-            query SearchResultsStats($query: String!) {
-                search(query: $query) {
-                    stats {
-                        approximateResultCount
-                        sparkline
-                    }
-                }
-            }
-        `,
-        { query }
-    ).pipe(
-        map(({ data, errors }) => {
-            if (!data || !data.search || !data.search.stats) {
-                throw createAggregateError(errors)
-            }
-            return data.search.stats
         })
     )
 }
 
-export function fetchSuggestions(query: string): Observable<GQL.SearchSuggestion> {
-    return queryGraphQL(
-        gql`
-            query SearchSuggestions($query: String!) {
-                search(query: $query) {
-                    suggestions {
-                        __typename
-                        ... on Repository {
-                            name
-                        }
-                        ... on File {
-                            path
-                            name
-                            isDirectory
-                            url
-                            repository {
+/**
+ * Repogroups to include in search suggestions.
+ *
+ * defer() is used here to avoid calling queryGraphQL in tests,
+ * which would fail when accessing window.context.xhrHeaders.
+ */
+const repogroupSuggestions = defer(() =>
+    queryGraphQL(gql`
+        query RepoGroups {
+            repoGroups {
+                __typename
+                name
+            }
+        }
+    `)
+).pipe(
+    map(dataOrThrowErrors),
+    map(({ repoGroups }) => repoGroups),
+    publishReplay(1),
+    refCount()
+)
+
+export function fetchSuggestions(query: string): Observable<SearchSuggestion[]> {
+    return combineLatest([
+        repogroupSuggestions,
+        queryGraphQL(
+            gql`
+                query SearchSuggestions($query: String!) {
+                    search(query: $query) {
+                        suggestions {
+                            __typename
+                            ... on Repository {
                                 name
                             }
-                        }
-                        ... on Symbol {
-                            name
-                            containerName
-                            url
-                            kind
-                            location {
-                                resource {
-                                    path
-                                    repository {
-                                        name
+                            ... on File {
+                                path
+                                name
+                                isDirectory
+                                url
+                                repository {
+                                    name
+                                }
+                            }
+                            ... on Symbol {
+                                name
+                                containerName
+                                url
+                                kind
+                                location {
+                                    resource {
+                                        path
+                                        repository {
+                                            name
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
-        `,
-        { query }
-    ).pipe(
-        mergeMap(({ data, errors }) => {
-            if (!data || !data.search || !data.search.suggestions) {
-                throw createAggregateError(errors)
-            }
-            return data.search.suggestions
-        })
-    )
+            `,
+            { query }
+        ).pipe(
+            map(({ data, errors }) => {
+                if (!data?.search?.suggestions) {
+                    throw createAggregateError(errors)
+                }
+                return data.search.suggestions
+            })
+        ),
+    ]).pipe(map(([repogroups, dynamicSuggestions]) => [...repogroups, ...dynamicSuggestions]))
 }
 
 export function fetchReposByQuery(query: string): Observable<{ name: string; url: string }[]> {
@@ -241,188 +255,171 @@ export function fetchReposByQuery(query: string): Observable<{ name: string; url
     )
 }
 
-const savedQueryFragment = gql`
-    fragment SavedQueryFields on SavedQuery {
+const savedSearchFragment = gql`
+    fragment SavedSearchFields on SavedSearch {
         id
-        subject {
-            ... on Site {
-                id
-                viewerCanAdminister
-            }
-            ... on Org {
-                id
-                viewerCanAdminister
-            }
-            ... on User {
-                id
-                viewerCanAdminister
-            }
-        }
-        index
         description
-        showOnHomepage
         notify
         notifySlack
         query
+        namespace {
+            id
+        }
+        slackWebhookURL
     }
 `
 
-export function fetchSavedQueries(): Observable<GQL.ISavedQuery[]> {
+export function fetchSavedSearches(): Observable<GQL.ISavedSearch[]> {
     return queryGraphQL(gql`
-        query SavedQueries {
-            savedQueries {
-                ...SavedQueryFields
+        query savedSearches {
+            savedSearches {
+                ...SavedSearchFields
             }
         }
-        ${savedQueryFragment}
+        ${savedSearchFragment}
     `).pipe(
         map(({ data, errors }) => {
-            if (!data || !data.savedQueries) {
+            if (!data || !data.savedSearches) {
                 throw createAggregateError(errors)
             }
-            return data.savedQueries
+            return data.savedSearches
         })
     )
 }
 
-export function createSavedQuery(
-    subject: GQL.SettingsSubject | GQL.ISettingsSubject | { id: GQL.ID },
-    settingsLastID: number | null,
-    description: string,
-    query: string,
-    showOnHomepage: boolean,
-    notify: boolean,
-    notifySlack: boolean,
-    disableSubscriptionNotifications?: boolean
-): Observable<GQL.ISavedQuery> {
-    return mutateGraphQL(
+export function fetchSavedSearch(id: GQL.ID): Observable<GQL.ISavedSearch> {
+    return queryGraphQL(
         gql`
-            mutation CreateSavedQuery(
-                $subject: ID!
-                $lastID: Int
-                $description: String!
-                $query: String!
-                $showOnHomepage: Boolean
-                $notify: Boolean
-                $notifySlack: Boolean
-                $disableSubscriptionNotifications: Boolean
-            ) {
-                settingsMutation(input: { subject: $subject, lastID: $lastID }) {
-                    createSavedQuery(
-                        description: $description
-                        query: $query
-                        showOnHomepage: $showOnHomepage
-                        notify: $notify
-                        notifySlack: $notifySlack
-                        disableSubscriptionNotifications: $disableSubscriptionNotifications
-                    ) {
-                        ...SavedQueryFields
+            query SavedSearch($id: ID!) {
+                node(id: $id) {
+                    ... on SavedSearch {
+                        id
+                        description
+                        query
+                        notify
+                        notifySlack
+                        slackWebhookURL
+                        namespace {
+                            id
+                        }
                     }
                 }
             }
-            ${savedQueryFragment}
+        `,
+        { id }
+    ).pipe(
+        map(dataOrThrowErrors),
+        map(data => data.node as GQL.ISavedSearch)
+    )
+}
+
+export function createSavedSearch(
+    description: string,
+    query: string,
+    notify: boolean,
+    notifySlack: boolean,
+    userId: GQL.ID | null,
+    orgId: GQL.ID | null
+): Observable<void> {
+    return mutateGraphQL(
+        gql`
+            mutation CreateSavedSearch(
+                $description: String!
+                $query: String!
+                $notifyOwner: Boolean!
+                $notifySlack: Boolean!
+                $userID: ID
+                $orgID: ID
+            ) {
+                createSavedSearch(
+                    description: $description
+                    query: $query
+                    notifyOwner: $notifyOwner
+                    notifySlack: $notifySlack
+                    userID: $userID
+                    orgID: $orgID
+                ) {
+                    ...SavedSearchFields
+                }
+            }
+            ${savedSearchFragment}
         `,
         {
             description,
             query,
-            showOnHomepage,
-            notify,
+            notifyOwner: notify,
             notifySlack,
-            disableSubscriptionNotifications: disableSubscriptionNotifications || false,
-            subject: subject.id,
-            lastID: settingsLastID,
+            userID: userId,
+            orgID: orgId,
         }
     ).pipe(
-        map(({ data, errors }) => {
-            if (!data || !data.settingsMutation || !data.settingsMutation.createSavedQuery) {
-                throw createAggregateError(errors)
-            }
-            return data.settingsMutation.createSavedQuery
-        })
+        map(dataOrThrowErrors),
+        map(() => undefined)
     )
 }
 
-export function updateSavedQuery(
-    subject: GQL.SettingsSubject | GQL.ISettingsSubject | { id: GQL.ID },
-    settingsLastID: number | null,
+export function updateSavedSearch(
     id: GQL.ID,
     description: string,
     query: string,
-    showOnHomepage: boolean,
     notify: boolean,
-    notifySlack: boolean
-): Observable<GQL.ISavedQuery> {
-    return mutateGraphQL(
-        gql`
-            mutation UpdateSavedQuery(
-                $subject: ID!
-                $lastID: Int
-                $id: ID!
-                $description: String
-                $query: String
-                $showOnHomepage: Boolean
-                $notify: Boolean
-                $notifySlack: Boolean
-            ) {
-                settingsMutation(input: { subject: $subject, lastID: $lastID }) {
-                    updateSavedQuery(
-                        id: $id
-                        description: $description
-                        query: $query
-                        showOnHomepage: $showOnHomepage
-                        notify: $notify
-                        notifySlack: $notifySlack
-                    ) {
-                        ...SavedQueryFields
-                    }
-                }
-            }
-            ${savedQueryFragment}
-        `,
-        { id, description, query, showOnHomepage, notify, notifySlack, subject: subject.id, lastID: settingsLastID }
-    ).pipe(
-        map(({ data, errors }) => {
-            if (!data || !data.settingsMutation || !data.settingsMutation.updateSavedQuery) {
-                throw createAggregateError(errors)
-            }
-            return data.settingsMutation.updateSavedQuery
-        })
-    )
-}
-
-export function deleteSavedQuery(
-    subject: GQL.SettingsSubject | GQL.ISettingsSubject | { id: GQL.ID },
-    settingsLastID: number | null,
-    id: GQL.ID,
-    disableSubscriptionNotifications?: boolean
+    notifySlack: boolean,
+    userId: GQL.ID | null,
+    orgId: GQL.ID | null
 ): Observable<void> {
     return mutateGraphQL(
         gql`
-            mutation DeleteSavedQuery(
-                $subject: ID!
-                $lastID: Int
+            mutation UpdateSavedSearch(
                 $id: ID!
-                $disableSubscriptionNotifications: Boolean
+                $description: String!
+                $query: String!
+                $notifyOwner: Boolean!
+                $notifySlack: Boolean!
+                $userID: ID
+                $orgID: ID
             ) {
-                settingsMutation(input: { subject: $subject, lastID: $lastID }) {
-                    deleteSavedQuery(id: $id, disableSubscriptionNotifications: $disableSubscriptionNotifications) {
-                        alwaysNil
-                    }
+                updateSavedSearch(
+                    id: $id
+                    description: $description
+                    query: $query
+                    notifyOwner: $notifyOwner
+                    notifySlack: $notifySlack
+                    userID: $userID
+                    orgID: $orgID
+                ) {
+                    ...SavedSearchFields
                 }
             }
+            ${savedSearchFragment}
         `,
         {
             id,
-            disableSubscriptionNotifications: disableSubscriptionNotifications || false,
-            subject: subject.id,
-            lastID: settingsLastID,
+            description,
+            query,
+            notifyOwner: notify,
+            notifySlack,
+            userID: userId,
+            orgID: orgId,
         }
     ).pipe(
-        map(({ data, errors }) => {
-            if (!data || !data.settingsMutation || !data.settingsMutation.deleteSavedQuery) {
-                throw createAggregateError(errors)
+        map(dataOrThrowErrors),
+        map(() => undefined)
+    )
+}
+
+export function deleteSavedSearch(id: GQL.ID): Observable<void> {
+    return mutateGraphQL(
+        gql`
+            mutation DeleteSavedSearch($id: ID!) {
+                deleteSavedSearch(id: $id) {
+                    alwaysNil
+                }
             }
-        })
+        `,
+        { id }
+    ).pipe(
+        map(dataOrThrowErrors),
+        map(() => undefined)
     )
 }
 
@@ -458,5 +455,33 @@ export const highlightCode = memoizeObservable(
                 return data.highlightCode
             })
         ),
-    ctx => `${ctx.code}:${ctx.fuzzyLanguage}:${ctx.disableTimeout}:${ctx.isLightTheme}`
+    ctx => `${ctx.code}:${ctx.fuzzyLanguage}:${String(ctx.disableTimeout)}:${String(ctx.isLightTheme)}`
 )
+
+/**
+ * Returns true if search performance and accuracy are limited because this is a
+ * single-node Docker deployment that is configured with more than 100 repositories.
+ */
+export function shouldDisplayPerformanceWarning(deployType: DeployType): Observable<boolean> {
+    if (deployType !== 'docker-container') {
+        return of(false)
+    }
+    const manyReposWarningLimit = 100
+    return queryGraphQL(
+        gql`
+            query ManyReposWarning($first: Int) {
+                repositories(first: $first) {
+                    nodes {
+                        id
+                    }
+                }
+            }
+        `,
+        {
+            first: manyReposWarningLimit + 1,
+        }
+    ).pipe(
+        map(dataOrThrowErrors),
+        map(data => (data.repositories.nodes || []).length > manyReposWarningLimit)
+    )
+}

@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/sourcegraph/sourcegraph/pkg/db/dbconn"
-	"github.com/sourcegraph/sourcegraph/pkg/db/dbtesting"
-	"github.com/sourcegraph/sourcegraph/pkg/randstring"
+	"github.com/sourcegraph/sourcegraph/internal/db/dbconn"
+	"github.com/sourcegraph/sourcegraph/internal/db/dbtesting"
+	"github.com/sourcegraph/sourcegraph/internal/randstring"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -82,6 +82,11 @@ func (u *users) SetPassword(ctx context.Context, id int32, resetCode string, new
 	return true, nil
 }
 
+func (u *users) DeletePasswordResetCode(ctx context.Context, id int32) error {
+	_, err := dbconn.Global.ExecContext(ctx, "UPDATE users SET passwd_reset_code=NULL, passwd_reset_time=NULL WHERE id=$1", id)
+	return err
+}
+
 // UpdatePassword updates a user's password given the current password.
 func (u *users) UpdatePassword(ctx context.Context, id int32, oldPassword, newPassword string) error {
 	// 🚨 SECURITY: No empty passwords.
@@ -96,6 +101,10 @@ func (u *users) UpdatePassword(ctx context.Context, id int32, oldPassword, newPa
 		return err
 	} else if !ok {
 		return errors.New("wrong old password")
+	}
+
+	if err := checkPasswordLength(newPassword); err != nil {
+		return err
 	}
 
 	passwd, err := hashPassword(newPassword)

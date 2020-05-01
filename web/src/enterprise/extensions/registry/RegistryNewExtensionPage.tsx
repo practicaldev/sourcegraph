@@ -1,5 +1,4 @@
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import { upperFirst } from 'lodash'
 import AddIcon from 'mdi-react/AddIcon'
 import PuzzleIcon from 'mdi-react/PuzzleIcon'
 import * as React from 'react'
@@ -19,6 +18,8 @@ import { eventLogger } from '../../../tracking/eventLogger'
 import { RegistryExtensionNameFormGroup, RegistryPublisherFormGroup } from '../extension/RegistryExtensionForm'
 import { queryViewerRegistryPublishers } from './backend'
 import { RegistryAreaPageProps } from './RegistryArea'
+import { ErrorAlert } from '../../../components/alerts'
+import * as H from 'history'
 
 function createExtension(publisher: GQL.ID, name: string): Observable<GQL.IExtensionRegistryCreateExtensionResult> {
     return mutateGraphQL(
@@ -53,6 +54,7 @@ function createExtension(publisher: GQL.ID, name: string): Observable<GQL.IExten
 
 interface Props extends RegistryAreaPageProps, RouteComponentProps<{}> {
     authenticatedUser: GQL.IUser
+    history: H.History
 }
 
 interface State {
@@ -88,7 +90,10 @@ export const RegistryNewExtensionPage = withAuthenticatedUser(
                         map(result => ({ publishersOrError: result, publisher: result[0] && result[0].id })),
                         catchError(error => [{ publishersOrError: asError(error) }])
                     )
-                ).subscribe(stateUpdate => this.setState(stateUpdate as State), err => console.error(err))
+                ).subscribe(
+                    stateUpdate => this.setState(stateUpdate as State),
+                    err => console.error(err)
+                )
             )
 
             this.subscriptions.add(
@@ -109,14 +114,17 @@ export const RegistryNewExtensionPage = withAuthenticatedUser(
                             )
                         )
                     )
-                    .subscribe(stateUpdate => this.setState(stateUpdate as State), err => console.error(err))
+                    .subscribe(
+                        stateUpdate => this.setState(stateUpdate as State),
+                        err => console.error(err)
+                    )
             )
 
             this.componentUpdates.next(this.props)
         }
 
-        public componentWillReceiveProps(nextProps: Props): void {
-            this.componentUpdates.next(nextProps)
+        public componentDidUpdate(): void {
+            this.componentUpdates.next(this.props)
         }
 
         public componentWillUnmount(): void {
@@ -149,6 +157,7 @@ export const RegistryNewExtensionPage = withAuthenticatedUser(
                                 publishersOrError={this.state.publishersOrError}
                                 onChange={this.onPublisherChange}
                                 disabled={this.state.creationOrError === 'loading'}
+                                history={this.props.history}
                             />
                             <RegistryExtensionNameFormGroup
                                 value={this.state.name}
@@ -189,9 +198,11 @@ export const RegistryNewExtensionPage = withAuthenticatedUser(
                             </button>
                         </Form>
                         {isErrorLike(this.state.creationOrError) && (
-                            <div className="alert alert-danger mt-3">
-                                {upperFirst(this.state.creationOrError.message)}
-                            </div>
+                            <ErrorAlert
+                                className="mt-3"
+                                error={this.state.creationOrError}
+                                history={this.props.history}
+                            />
                         )}
                     </ModalPage>
                 </>

@@ -1,14 +1,16 @@
 // Entry point for the web app
 
-@import './SourcegraphWebApp.scss'; // Need .scss extension because of https://github.com/webpack-contrib/sass-loader/issues/556
+@import './SourcegraphWebApp';
 
 // Enterprise styles
-@import './enterprise/dotcom/welcome/WelcomeArea';
+@import './enterprise/campaigns/detail/CampaignDetails';
+@import './enterprise/campaigns/global/marketing/CampaignMarketing';
+@import './enterprise/campaigns/list/CampaignNode';
+@import './enterprise/campaigns/detail/changesets/ChangesetNode';
 @import './enterprise/extensions/registry/RegistryArea';
 @import './enterprise/extensions/registry/RegistryNewExtensionPage';
 @import './enterprise/extensions/extension/RegistryExtensionManagePage';
 @import './enterprise/productSubscription/ProductCertificate';
 @import './enterprise/productSubscription/TrueUpStatusSummary';
 @import './enterprise/user/productSubscriptions/PaymentTokenFormControl';
-
-@import './enterprise/extensions/explore/ExtensionsExploreSection';
+@import './enterprise/repo/Repo';

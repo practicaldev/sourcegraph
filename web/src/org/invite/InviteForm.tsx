@@ -1,5 +1,4 @@
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import { upperFirst } from 'lodash'
 import AddIcon from 'mdi-react/AddIcon'
 import CloseIcon from 'mdi-react/CloseIcon'
 import EmailOpenOutlineIcon from 'mdi-react/EmailOpenOutlineIcon'
@@ -15,6 +14,8 @@ import { CopyableText } from '../../components/CopyableText'
 import { DismissibleAlert } from '../../components/DismissibleAlert'
 import { Form } from '../../components/Form'
 import { eventLogger } from '../../tracking/eventLogger'
+import { ErrorAlert } from '../../components/alerts'
+import * as H from 'history'
 
 function inviteUserToOrganization(
     username: string,
@@ -35,19 +36,11 @@ function inviteUserToOrganization(
         }
     ).pipe(
         map(({ data, errors }) => {
-            const eventData = {
-                organization: {
-                    invite: {
-                        username,
-                    },
-                    org_id: organization,
-                },
-            }
             if (!data || !data.inviteUserToOrganization || (errors && errors.length > 0)) {
-                eventLogger.log('InviteOrgMemberFailed', eventData)
+                eventLogger.log('InviteOrgMemberFailed')
                 throw createAggregateError(errors)
             }
-            eventLogger.log('OrgMemberInvited', eventData)
+            eventLogger.log('OrgMemberInvited')
             return data.inviteUserToOrganization
         })
     )
@@ -97,7 +90,7 @@ const InvitedNotification: React.FunctionComponent<{
             )}
             <CopyableText text={invitationURL} size={40} className="mt-2" />
         </div>
-        <button className="btn btn-icon" title="Dismiss" onClick={onDismiss}>
+        <button type="button" className="btn btn-icon" title="Dismiss" onClick={onDismiss}>
             <CloseIcon className="icon-inline" />
         </button>
     </div>
@@ -111,6 +104,7 @@ interface Props {
     onDidUpdateOrganizationMembers: () => void
 
     onOrganizationUpdate: () => void
+    history: H.History
 }
 
 interface SubmittedInvite extends Pick<GQL.IInviteUserToOrganizationResult, 'sentInvitationEmail' | 'invitationURL'> {
@@ -149,16 +143,7 @@ export class InviteForm extends React.PureComponent<Props, State> {
                 .pipe(
                     tap(e => e.preventDefault()),
                     withLatestFrom(orgChanges, this.usernameChanges),
-                    tap(([, orgId, username]) =>
-                        eventLogger.log('InviteOrgMemberClicked', {
-                            organization: {
-                                invite: {
-                                    username,
-                                },
-                                org_id: orgId,
-                            },
-                        })
-                    ),
+                    tap(() => eventLogger.log('InviteOrgMemberClicked')),
                     mergeMap(([, { orgID }, username]) =>
                         inviteUserToOrganization(username, orgID).pipe(
                             tap(() => this.props.onOrganizationUpdate()),
@@ -189,7 +174,10 @@ export class InviteForm extends React.PureComponent<Props, State> {
                         )
                     )
                 )
-                .subscribe(stateUpdate => this.setState(stateUpdate), err => console.error(err))
+                .subscribe(
+                    stateUpdate => this.setState(stateUpdate),
+                    err => console.error(err)
+                )
         )
 
         // Adds.
@@ -225,14 +213,17 @@ export class InviteForm extends React.PureComponent<Props, State> {
                         )
                     )
                 )
-                .subscribe(stateUpdate => this.setState(stateUpdate), err => console.error(err))
+                .subscribe(
+                    stateUpdate => this.setState(stateUpdate),
+                    err => console.error(err)
+                )
         )
 
         this.componentUpdates.next(this.props)
     }
 
-    public componentWillReceiveProps(nextProps: Props): void {
-        this.componentUpdates.next(nextProps)
+    public componentDidUpdate(): void {
+        this.componentUpdates.next(this.props)
     }
 
     public componentWillUnmount(): void {
@@ -288,6 +279,7 @@ export class InviteForm extends React.PureComponent<Props, State> {
                             )}
                             {(emailInvitesEnabled || !this.viewerCanAddUserToOrganization) && (
                                 <div className="form-group flex-column mb-2 mr-sm-2">
+                                    {/* eslint-disable-next-line react/button-has-type */}
                                     <button
                                         type={viewerCanAddUserToOrganization ? 'button' : 'submit'}
                                         disabled={!!this.state.loading}
@@ -330,20 +322,19 @@ export class InviteForm extends React.PureComponent<Props, State> {
                     )}
                 {this.state.invited &&
                     this.state.invited.map(({ username, sentInvitationEmail, invitationURL }, i) => (
+                        /* eslint-disable react/jsx-no-bind */
                         <InvitedNotification
                             key={i}
                             className="alert alert-success invite-form__alert"
                             username={username}
                             sentInvitationEmail={sentInvitationEmail}
                             invitationURL={invitationURL}
-                            // tslint:disable-next-line:jsx-no-lambda
                             onDismiss={() => this.dismissNotification(i)}
                         />
+                        /* eslint-enable react/jsx-no-bind */
                     ))}
                 {this.state.error && (
-                    <div className="invite-form__alert alert alert-danger">
-                        Error: {upperFirst(this.state.error.message)}
-                    </div>
+                    <ErrorAlert className="invite-form__alert" error={this.state.error} history={this.props.history} />
                 )}
             </div>
         )

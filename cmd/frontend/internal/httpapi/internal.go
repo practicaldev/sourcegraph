@@ -1,27 +1,29 @@
 package httpapi
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
-	"io"
+	"io/ioutil"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
-	"strings"
-
-	log15 "gopkg.in/inconshreveable/log15.v2"
 
 	"github.com/gorilla/mux"
+	"github.com/inconshreveable/log15"
 	"github.com/pkg/errors"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/backend"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/db"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/globals"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/conf"
-	"github.com/sourcegraph/sourcegraph/pkg/gitserver"
-	"github.com/sourcegraph/sourcegraph/pkg/jsonc"
-	"github.com/sourcegraph/sourcegraph/pkg/txemail"
-	"github.com/sourcegraph/sourcegraph/pkg/vcs/git"
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/conf"
+	"github.com/sourcegraph/sourcegraph/internal/gitserver"
+	"github.com/sourcegraph/sourcegraph/internal/gitserver/protocol"
+	"github.com/sourcegraph/sourcegraph/internal/jsonc"
+	"github.com/sourcegraph/sourcegraph/internal/txemail"
+	"github.com/sourcegraph/sourcegraph/internal/vcs/git"
 )
 
 func serveReposGetByName(w http.ResponseWriter, r *http.Request) error {
@@ -35,49 +37,7 @@ func serveReposGetByName(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
-	return nil
-}
-
-func serveReposCreateIfNotExists(w http.ResponseWriter, r *http.Request) error {
-	var repo api.RepoCreateOrUpdateRequest
-	err := json.NewDecoder(r.Body).Decode(&repo)
-	if err != nil {
-		return err
-	}
-	err = backend.Repos.Upsert(r.Context(), api.InsertRepoOp{
-		Name:         repo.RepoName,
-		Description:  repo.Description,
-		Fork:         repo.Fork,
-		Archived:     repo.Archived,
-		Enabled:      repo.Enabled,
-		ExternalRepo: repo.ExternalRepo,
-	})
-	if err != nil {
-		return err
-	}
-	sgRepo, err := backend.Repos.GetByName(r.Context(), repo.RepoName)
-	if err != nil {
-		return err
-	}
-	data, err := json.Marshal(sgRepo)
-	if err != nil {
-		return err
-	}
-	w.WriteHeader(http.StatusOK)
-	w.Write(data)
-	return nil
-}
-
-func serveReposUpdateMetadata(w http.ResponseWriter, r *http.Request) error {
-	var repo api.ReposUpdateMetadataRequest
-	err := json.NewDecoder(r.Body).Decode(&repo)
-	if err != nil {
-		return err
-	}
-	if err := db.Repos.UpdateRepositoryMetadata(r.Context(), repo.RepoName, repo.Description, repo.Fork, repo.Archived); err != nil {
-		return errors.Wrap(err, "Repos.UpdateRepositoryMetadata failed")
-	}
+	_, _ = w.Write(data)
 	return nil
 }
 
@@ -96,7 +56,7 @@ func servePhabricatorRepoCreate(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	_, _ = w.Write(data)
 	return nil
 }
 
@@ -173,38 +133,170 @@ func serveConfiguration(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func serveReposList(w http.ResponseWriter, r *http.Request) error {
-	var opt db.ReposListOptions
-	err := json.NewDecoder(r.Body).Decode(&opt)
-	if err != nil {
-		return err
+// serveSearchConfiguration is _only_ used by the zoekt index server. Zoekt does
+// not depend on frontend and therefore does not have access to `conf.Watch`.
+// Additionally, it only cares about certain search specific settings so this
+// search specific endpoint is used rather than serving the entire site settings
+// from /.internal/configuration.
+func serveSearchConfiguration(w http.ResponseWriter, r *http.Request) error {
+	opts := struct {
+		LargeFiles []string
+		Symbols    bool
+	}{
+		LargeFiles: conf.Get().SearchLargeFiles,
+		Symbols:    conf.SymbolIndexEnabled(),
 	}
-	res, err := backend.Repos.List(r.Context(), opt)
+	err := json.NewEncoder(w).Encode(opts)
 	if err != nil {
+		return errors.Wrap(err, "encode")
+	}
+	return nil
+}
+
+type reposListServer struct {
+	// SourcegraphDotComMode is true if this instance of Sourcegraph is http://sourcegraph.com
+	SourcegraphDotComMode bool
+
+	// Repos is the subset of backend.Repos methods we use. Declared as an
+	// interface for testing.
+	Repos interface {
+		// ListDefault returns the repositories to index on Sourcegraph.com
+		ListDefault(context.Context) ([]*types.Repo, error)
+		// List returns a list of repositories
+		List(context.Context, db.ReposListOptions) ([]*types.Repo, error)
+	}
+
+	// Indexers is the subset of searchbackend.Indexers methods we
+	// use. reposListServer is used by indexed-search to get the list of
+	// repositories to index. These methods are used to return the correct
+	// subset for horizontal indexed search. Declared as an interface for
+	// testing.
+	Indexers interface {
+		// ReposSubset returns the subset of repoNames that hostname should
+		// index.
+		ReposSubset(ctx context.Context, hostname string, indexed map[string]struct{}, repoNames []string) ([]string, error)
+		// Enabled is true if horizontal indexed search is enabled.
+		Enabled() bool
+	}
+}
+
+// Deprecated: serveList used to be used by Zoekt to get the list of
+// repositories to index. Can be removed in 3.11.
+func (h *reposListServer) serveList(w http.ResponseWriter, r *http.Request) error {
+	var opt struct {
+		Hostname string
+		db.ReposListOptions
+	}
+	if err := json.NewDecoder(r.Body).Decode(&opt); err != nil {
 		return err
 	}
 
-	// BACKCOMPAT: Add a "URI" field because zoekt-sourcegraph-indexserver expects one to exist
-	// (with the repository name). This is a legacy of the rename from "repo URI" to "repo name".
-	type repoWithBackcompatURIField struct {
-		URI string
-		*types.Repo
-	}
-	res2 := make([]*repoWithBackcompatURIField, len(res))
-	for i, repo := range res {
-		res2[i] = &repoWithBackcompatURIField{
-			URI:  string(repo.Name),
-			Repo: repo,
+	var names []string
+	if h.SourcegraphDotComMode {
+		res, err := h.Repos.ListDefault(r.Context())
+		if err != nil {
+			return errors.Wrap(err, "listing repos")
+		}
+		names = make([]string, len(res))
+		for i, r := range res {
+			names[i] = string(r.Name)
+		}
+	} else {
+		res, err := h.Repos.List(r.Context(), opt.ReposListOptions)
+		if err != nil {
+			return errors.Wrap(err, "listing repos")
+		}
+		names = make([]string, len(res))
+		for i, r := range res {
+			names[i] = string(r.Name)
 		}
 	}
 
-	data, err := json.Marshal(res2)
+	if h.Indexers.Enabled() {
+		var err error
+		names, err = h.Indexers.ReposSubset(r.Context(), opt.Hostname, map[string]struct{}{}, names)
+		if err != nil {
+			return err
+		}
+	}
+
+	// BACKCOMPAT: Add a Name field that serializes to `URI` because
+	// zoekt-sourcegraph-indexserver expects one to exist (with the
+	// repository name). This is a legacy of the rename from "repo URI" to
+	// "repo name".
+	type repoWithBackcompatURIField struct {
+		Name string `json:"URI"`
+	}
+	res := make([]repoWithBackcompatURIField, len(names))
+	for i, name := range names {
+		res[i].Name = name
+	}
+
+	data, err := json.Marshal(res)
 	if err != nil {
 		return err
 	}
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	_, _ = w.Write(data)
 	return nil
+}
+
+// serveIndex is used by zoekt to get the list of repositories for it to
+// index.
+func (h *reposListServer) serveIndex(w http.ResponseWriter, r *http.Request) error {
+	var opt struct {
+		// Hostname is used to determine the subset of repos to return
+		Hostname string
+		// Indexed is the repository names of indexed repos by Hostname.
+		Indexed []string
+	}
+	if err := json.NewDecoder(r.Body).Decode(&opt); err != nil {
+		return err
+	}
+
+	var names []string
+	if h.SourcegraphDotComMode {
+		res, err := h.Repos.ListDefault(r.Context())
+		if err != nil {
+			return errors.Wrap(err, "listing repos")
+		}
+		names = make([]string, len(res))
+		for i, r := range res {
+			names[i] = string(r.Name)
+		}
+	} else {
+		trueP := true
+		res, err := h.Repos.List(r.Context(), db.ReposListOptions{Index: &trueP})
+		if err != nil {
+			return errors.Wrap(err, "listing repos")
+		}
+		names = make([]string, len(res))
+		for i, r := range res {
+			names[i] = string(r.Name)
+		}
+	}
+
+	if h.Indexers.Enabled() {
+		indexed := make(map[string]struct{}, len(opt.Indexed))
+		for _, name := range opt.Indexed {
+			indexed[name] = struct{}{}
+		}
+
+		var err error
+		names, err = h.Indexers.ReposSubset(r.Context(), opt.Hostname, indexed, names)
+		if err != nil {
+			return err
+		}
+	}
+
+	data := struct {
+		RepoNames []string
+	}{
+		RepoNames: names,
+	}
+
+	w.WriteHeader(http.StatusOK)
+	return json.NewEncoder(w).Encode(&data)
 }
 
 func serveReposListEnabled(w http.ResponseWriter, r *http.Request) error {
@@ -217,29 +309,30 @@ func serveReposListEnabled(w http.ResponseWriter, r *http.Request) error {
 
 func serveSavedQueriesListAll(w http.ResponseWriter, r *http.Request) error {
 	// List settings for all users, orgs, etc.
-	settings, err := db.Settings.ListAll(r.Context())
+	settings, err := db.SavedSearches.ListAll(r.Context())
 	if err != nil {
-		return errors.Wrap(err, "db.Settings.ListAll")
+		return errors.Wrap(err, "db.SavedSearches.ListAll")
 	}
 
 	queries := make([]api.SavedQuerySpecAndConfig, 0, len(settings))
-	for _, settings := range settings {
-		var config api.PartialConfigSavedQueries
-		if err := jsonc.Unmarshal(settings.Contents, &config); err != nil {
-			return err
+	for _, s := range settings {
+		var spec api.SavedQueryIDSpec
+		if s.Config.UserID != nil {
+			spec = api.SavedQueryIDSpec{Subject: api.SettingsSubject{User: s.Config.UserID}, Key: s.Config.Key}
+		} else if s.Config.OrgID != nil {
+			spec = api.SavedQueryIDSpec{Subject: api.SettingsSubject{Org: s.Config.OrgID}, Key: s.Config.Key}
 		}
-		for _, query := range config.SavedQueries {
-			spec := api.SavedQueryIDSpec{Subject: settings.Subject, Key: query.Key}
-			queries = append(queries, api.SavedQuerySpecAndConfig{
-				Spec:   spec,
-				Config: query,
-			})
-		}
+
+		queries = append(queries, api.SavedQuerySpecAndConfig{
+			Spec:   spec,
+			Config: s.Config,
+		})
 	}
 
 	if err := json.NewEncoder(w).Encode(queries); err != nil {
 		return errors.Wrap(err, "Encode")
 	}
+
 	return nil
 }
 
@@ -249,7 +342,7 @@ func serveSavedQueriesGetInfo(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return errors.Wrap(err, "Decode")
 	}
-	info, err := db.SavedQueries.Get(r.Context(), query)
+	info, err := db.QueryRunnerState.Get(r.Context(), query)
 	if err != nil {
 		return errors.Wrap(err, "SavedQueries.Get")
 	}
@@ -265,7 +358,7 @@ func serveSavedQueriesSetInfo(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return errors.Wrap(err, "Decode")
 	}
-	err = db.SavedQueries.Set(r.Context(), &db.SavedQueryInfo{
+	err = db.QueryRunnerState.Set(r.Context(), &db.SavedQueryInfo{
 		Query:        info.Query,
 		LastExecuted: info.LastExecuted,
 		LatestResult: info.LatestResult,
@@ -275,7 +368,7 @@ func serveSavedQueriesSetInfo(w http.ResponseWriter, r *http.Request) error {
 		return errors.Wrap(err, "SavedQueries.Set")
 	}
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	_, _ = w.Write([]byte("OK"))
 	return nil
 }
 
@@ -285,12 +378,12 @@ func serveSavedQueriesDeleteInfo(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return errors.Wrap(err, "Decode")
 	}
-	err = db.SavedQueries.Delete(r.Context(), query)
+	err = db.QueryRunnerState.Delete(r.Context(), query)
 	if err != nil {
 		return errors.Wrap(err, "SavedQueries.Delete")
 	}
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	_, _ = w.Write([]byte("OK"))
 	return nil
 }
 
@@ -378,14 +471,7 @@ func serveUserEmailsGetEmail(w http.ResponseWriter, r *http.Request) error {
 }
 
 func serveExternalURL(w http.ResponseWriter, r *http.Request) error {
-	if err := json.NewEncoder(w).Encode(globals.ExternalURL.String()); err != nil {
-		return errors.Wrap(err, "Encode")
-	}
-	return nil
-}
-
-func serveGitServerAddrs(w http.ResponseWriter, r *http.Request) error {
-	if err := json.NewEncoder(w).Encode(conf.SrcGitServers); err != nil {
+	if err := json.NewEncoder(w).Encode(globals.ExternalURL().String()); err != nil {
 		return errors.Wrap(err, "Encode")
 	}
 	return nil
@@ -420,7 +506,7 @@ func serveGitResolveRevision(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(commitID))
+	_, _ = w.Write([]byte(commitID))
 	return nil
 }
 
@@ -437,67 +523,109 @@ func serveGitTar(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	src, err := git.Archive(r.Context(), repo, git.ArchiveOptions{Treeish: string(commit), Format: "tar"})
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-
-	w.Header().Set("Content-Type", "application/x-tar")
-	w.WriteHeader(http.StatusOK)
-	_, err = io.Copy(w, src)
-	return err
-}
-
-func serveGitInfoRefs(w http.ResponseWriter, r *http.Request) error {
-	service := r.URL.Query().Get("service")
-	if service != "git-upload-pack" {
-		return errors.New("only support service git-upload-pack")
+	opts := gitserver.ArchiveOptions{
+		Treeish: string(commit),
+		Format:  "tar",
 	}
 
-	repoName := api.RepoName(mux.Vars(r)["RepoName"])
-	repo, err := backend.Repos.GetByName(r.Context(), repoName)
-	if err != nil {
-		return err
-	}
+	location := gitserver.DefaultClient.ArchiveURL(r.Context(), repo, opts)
 
-	if !repo.Enabled {
-		return errors.Errorf("repo is not enabled: %s", repo.Name)
-	}
+	w.Header().Set("Location", location.String())
+	w.WriteHeader(http.StatusFound)
 
-	cmd := gitserver.DefaultClient.Command("git", "upload-pack", "--stateless-rpc", "--advertise-refs", ".")
-	cmd.Repo = gitserver.Repo{Name: repo.Name}
-	refs, err := cmd.Output(r.Context())
-	if err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", fmt.Sprintf("application/x-git-upload-pack-advertisement"))
-	w.WriteHeader(http.StatusOK)
-	w.Write(packetWrite("# service=git-upload-pack\n"))
-	w.Write([]byte("0000"))
-	w.Write(refs)
 	return nil
 }
 
-func serveGitUploadPack(w http.ResponseWriter, r *http.Request) error {
-	repoName := api.RepoName(mux.Vars(r)["RepoName"])
-	repo, err := backend.Repos.GetByName(r.Context(), repoName)
+func serveGitExec(w http.ResponseWriter, r *http.Request) error {
+	defer r.Body.Close()
+	req := protocol.ExecRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return errors.Wrap(err, "Decode")
+	}
+
+	vars := mux.Vars(r)
+	repoID, err := strconv.ParseInt(vars["RepoID"], 10, 64)
+	if err != nil {
+		http.Error(w, "illegal repository id: "+err.Error(), http.StatusBadRequest)
+		return nil
+	}
+
+	repo, err := db.Repos.Get(r.Context(), api.RepoID(repoID))
 	if err != nil {
 		return err
 	}
 
-	gitserver.DefaultClient.UploadPack(repo.Name, w, r)
+	// Set repo name in gitserver request payload
+	req.Repo = repo.Name
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(req); err != nil {
+		return errors.Wrap(err, "Encode")
+	}
+
+	// Find the correct shard to query
+	addr := gitserver.DefaultClient.AddrForRepo(r.Context(), repo.Name)
+
+	director := func(req *http.Request) {
+		req.URL.Scheme = "http"
+		req.URL.Host = addr
+		req.URL.Path = "/exec"
+		req.Body = ioutil.NopCloser(bytes.NewReader(buf.Bytes()))
+		req.ContentLength = int64(buf.Len())
+	}
+
+	gitserver.DefaultReverseProxy.ServeHTTP(repo.Name, "POST", "exec", director, w, r)
 	return nil
 }
 
-func packetWrite(str string) []byte {
-	s := strconv.FormatInt(int64(len(str)+4), 16)
-	if len(s)%4 != 0 {
-		s = strings.Repeat("0", 4-len(s)%4) + s
+// gitServiceHandler are handlers which proxy git clone requests to the
+// gitserver for the repo.
+type gitServiceHandler struct {
+	Gitserver interface {
+		AddrForRepo(context.Context, api.RepoName) string
 	}
-	return []byte(s + str)
+}
+
+func (s *gitServiceHandler) serveInfoRefs(w http.ResponseWriter, r *http.Request) {
+	s.redirectToGitServer(w, r, "/info/refs")
+}
+
+func (s *gitServiceHandler) serveGitUploadPack(w http.ResponseWriter, r *http.Request) {
+	s.redirectToGitServer(w, r, "/git-upload-pack")
+}
+
+func (s *gitServiceHandler) redirectToGitServer(w http.ResponseWriter, r *http.Request, gitPath string) {
+	repo := mux.Vars(r)["RepoName"]
+
+	u := &url.URL{
+		Scheme:   "http",
+		Host:     s.Gitserver.AddrForRepo(r.Context(), api.RepoName(repo)),
+		Path:     path.Join("/git", repo, gitPath),
+		RawQuery: r.URL.RawQuery,
+	}
+
+	http.Redirect(w, r, u.String(), http.StatusTemporaryRedirect)
 }
 
 func handlePing(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("pong"))
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "could not parse form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	for _, service := range r.Form["service"] {
+		switch service {
+		case "gitserver":
+			if err := gitserver.DefaultClient.WaitForGitServers(r.Context()); err != nil {
+				http.Error(w, "wait for gitservers failed: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+
+		default:
+			http.Error(w, "unknown service: "+service, http.StatusBadRequest)
+			return
+		}
+	}
+
+	_, _ = w.Write([]byte("pong"))
 }

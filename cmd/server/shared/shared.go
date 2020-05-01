@@ -5,42 +5,46 @@ package shared
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
-
-	"github.com/sourcegraph/sourcegraph/cmd/server/internal/goreman"
+	"github.com/sourcegraph/sourcegraph/internal/db/dbutil"
+	"github.com/sourcegraph/sourcegraph/internal/goreman"
 )
 
 // FrontendInternalHost is the value of SRC_FRONTEND_INTERNAL.
 const FrontendInternalHost = "127.0.0.1:3090"
 
-// zoektHost is the address zoekt webserver is listening on.
-const zoektHost = "127.0.0.1:3070"
-
 // defaultEnv is environment variables that will be set if not already set.
 var defaultEnv = map[string]string{
 	// Sourcegraph services running in this container
-	"SRC_GIT_SERVERS":       "127.0.0.1:3178",
-	"SEARCHER_URL":          "http://127.0.0.1:3181",
-	"REPO_UPDATER_URL":      "http://127.0.0.1:3182",
-	"QUERY_RUNNER_URL":      "http://127.0.0.1:3183",
-	"SRC_SYNTECT_SERVER":    "http://127.0.0.1:9238",
-	"SYMBOLS_URL":           "http://127.0.0.1:3184",
-	"SRC_HTTP_ADDR":         ":8080",
-	"SRC_HTTPS_ADDR":        ":8443",
-	"SRC_FRONTEND_INTERNAL": FrontendInternalHost,
-	"GITHUB_BASE_URL":       "http://127.0.0.1:3180", // points to github-proxy
-	"ZOEKT_HOST":            zoektHost,
+	"SRC_GIT_SERVERS":                       "127.0.0.1:3178",
+	"SEARCHER_URL":                          "http://127.0.0.1:3181",
+	"REPO_UPDATER_URL":                      "http://127.0.0.1:3182",
+	"QUERY_RUNNER_URL":                      "http://127.0.0.1:3183",
+	"SRC_SYNTECT_SERVER":                    "http://127.0.0.1:9238",
+	"SYMBOLS_URL":                           "http://127.0.0.1:3184",
+	"REPLACER_URL":                          "http://127.0.0.1:3185",
+	"PRECISE_CODE_INTEL_API_SERVER_URL":     "http://127.0.0.1:3186",
+	"PRECISE_CODE_INTEL_BUNDLE_MANAGER_URL": "http://127.0.0.1:3187",
+	"SRC_HTTP_ADDR":                         ":8080",
+	"SRC_HTTPS_ADDR":                        ":8443",
+	"SRC_FRONTEND_INTERNAL":                 FrontendInternalHost,
+	"GITHUB_BASE_URL":                       "http://127.0.0.1:3180", // points to github-proxy
+
+	"GRAFANA_SERVER_URL": "http://127.0.0.1:3370",
 
 	// Limit our cache size to 100GB, same as prod. We should probably update
 	// searcher/symbols to ensure this value isn't larger than the volume for
 	// CACHE_DIR.
 	"SEARCHER_CACHE_SIZE_MB": "50000",
+	"REPLACER_CACHE_SIZE_MB": "50000",
 	"SYMBOLS_CACHE_SIZE_MB":  "50000",
 
 	// Used to differentiate between deployments on dev, Docker, and Kubernetes.
@@ -57,12 +61,13 @@ var defaultEnv = map[string]string{
 }
 
 // Set verbosity based on simple interpretation of env var to avoid external dependencies (such as
-// on github.com/sourcegraph/sourcegraph/pkg/env).
+// on github.com/sourcegraph/sourcegraph/internal/env).
 var verbose = os.Getenv("SRC_LOG_LEVEL") == "dbug" || os.Getenv("SRC_LOG_LEVEL") == "info"
 
 // Main is the main server command function which is shared between Sourcegraph
 // server's open-source and enterprise variant.
 func Main() {
+	flag.Parse()
 	log.SetFlags(0)
 
 	// Ensure CONFIG_DIR and DATA_DIR
@@ -79,26 +84,12 @@ func Main() {
 		if err != nil && !os.IsNotExist(err) {
 			log.Fatalf("failed to load %s: %s", filepath.Join(configDir, "env"), err)
 		}
-
-		// Load the legacy config file if it exists.
-		//
-		// TODO(slimsag): Remove this code in the next significant version of
-		// Sourcegraph after 3.0.
-		configPath := os.Getenv("SOURCEGRAPH_CONFIG_FILE")
-		if configPath == "" {
-			configPath = filepath.Join(configDir, "sourcegraph-config.json")
-		}
-		_, err = os.Stat(configPath)
-		if err == nil {
-			if err := os.Setenv("SOURCEGRAPH_CONFIG_FILE", configPath); err != nil {
-				log.Fatal(err)
-			}
-		}
 	}
 
 	// Next persistence
 	{
 		SetDefaultEnv("SRC_REPOS_DIR", filepath.Join(DataDir, "repos"))
+		SetDefaultEnv("LSIF_STORAGE_ROOT", filepath.Join(DataDir, "lsif-storage"))
 		SetDefaultEnv("CACHE_DIR", filepath.Join(DataDir, "cache"))
 	}
 
@@ -126,8 +117,8 @@ func Main() {
 		log.Println("Failed to setup SSH authorization:", err)
 		log.Fatal("SSH authorization required for cloning from your codehost. Please see README.")
 	}
-	if err := copyNetrc(); err != nil {
-		log.Fatal("Failed to copy netrc:", err)
+	if err := copyConfigs(); err != nil {
+		log.Fatal("Failed to copy configs:", err)
 	}
 
 	// TODO validate known_hosts contains all code hosts in config.
@@ -137,11 +128,7 @@ func Main() {
 		log.Fatal("Failed to setup nginx:", err)
 	}
 
-	zoektIndexDir := filepath.Join(DataDir, "zoekt/index")
-	debugFlag := ""
-	if verbose {
-		debugFlag = "-debug"
-	}
+	postgresExporterLine := fmt.Sprintf(`postgres_exporter: env DATA_SOURCE_NAME="%s" postgres_exporter --log.level=%s`, dbutil.PostgresDSN("postgres", os.Getenv), convertLogLevel(os.Getenv("SRC_LOG_LEVEL")))
 
 	procfile := []string{
 		nginx,
@@ -149,32 +136,58 @@ func Main() {
 		`gitserver: gitserver`,
 		`query-runner: query-runner`,
 		`symbols: symbols`,
-		`management-console: management-console`,
+		`precise-code-intel-api-server: node /precise-code-intel/out/api-server/api.js`,
+		`precise-code-intel-bundle-manager: node /precise-code-intel/out/bundle-manager/manager.js`,
+		`precise-code-intel-worker: node /precise-code-intel/out/worker/worker.js`,
 		`searcher: searcher`,
+		`replacer: replacer`,
 		`github-proxy: github-proxy`,
 		`repo-updater: repo-updater`,
-		`syntect_server: sh -c 'env QUIET=true ROCKET_LIMITS='"'"'{json=10485760}'"'"' ROCKET_PORT=9238 ROCKET_ADDRESS='"'"'"127.0.0.1"'"'"' ROCKET_ENV=production syntect_server | grep -v "Rocket has launched" | grep -v "Warning: environment is"'`,
-		fmt.Sprintf("zoekt-indexserver: zoekt-sourcegraph-indexserver -sourcegraph_url http://%s -index %s -interval 1m -listen 127.0.0.1:6072 %s", FrontendInternalHost, zoektIndexDir, debugFlag),
-		fmt.Sprintf("zoekt-webserver: zoekt-webserver -rpc -pprof -listen %s -index %s", zoektHost, zoektIndexDir),
+		`syntect_server: sh -c 'env QUIET=true ROCKET_ENV=production ROCKET_PORT=9238 ROCKET_LIMITS='"'"'{json=10485760}'"'"' ROCKET_SECRET_KEY='"'"'SeerutKeyIsI7releuantAndknvsuZPluaseIgnorYA='"'"' ROCKET_KEEP_ALIVE=0 ROCKET_ADDRESS='"'"'"127.0.0.1"'"'"' syntect_server | grep -v "Rocket has launched" | grep -v "Warning: environment is"' | grep -v 'Configured for production'`,
+		`prometheus: prometheus --config.file=/sg_config_prometheus/prometheus.yml --web.enable-admin-api --storage.tsdb.path=/var/opt/sourcegraph/prometheus --web.console.libraries=/usr/share/prometheus/console_libraries --web.console.templates=/usr/share/prometheus/consoles >> /var/opt/sourcegraph/prometheus.log 2>&1`,
+		`grafana: /usr/share/grafana/bin/grafana-server -config /sg_config_grafana/grafana-single-container.ini -homepath /usr/share/grafana >> /var/opt/sourcegraph/grafana.log 2>&1`,
+		`jaeger: jaeger --memory.max-traces=20000 >> /var/opt/sourcegraph/jaeger.log 2>&1`,
+		postgresExporterLine,
 	}
 	procfile = append(procfile, ProcfileAdditions...)
-	if line, err := maybeRedisProcFile(); err != nil {
+
+	redisStoreLine, err := maybeRedisStoreProcFile()
+	if err != nil {
 		log.Fatal(err)
-	} else if line != "" {
-		procfile = append(procfile, line)
 	}
+	if redisStoreLine != "" {
+		procfile = append(procfile, redisStoreLine)
+	}
+	redisCacheLine, err := maybeRedisCacheProcFile()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if redisCacheLine != "" {
+		procfile = append(procfile, redisCacheLine)
+	}
+
 	if line, err := maybePostgresProcFile(); err != nil {
 		log.Fatal(err)
 	} else if line != "" {
 		procfile = append(procfile, line)
 	}
 
-	const goremanAddr = "127.0.0.1:5005"
-	if err := os.Setenv("GOREMAN_RPC_ADDR", goremanAddr); err != nil {
-		log.Fatal(err)
+	procfile = append(procfile, maybeZoektProcFile()...)
+
+	// Shutdown if any process dies
+	procDiedAction := goreman.Shutdown
+	if ignore, _ := strconv.ParseBool(os.Getenv("IGNORE_PROCESS_DEATH")); ignore {
+		// IGNORE_PROCESS_DEATH is an escape hatch so that sourcegraph/server
+		// keeps running in the case of a subprocess dying on startup. An
+		// example use case is connecting to postgres even though frontend is
+		// dying due to a bad migration.
+		procDiedAction = goreman.Ignore
 	}
 
-	err = goreman.Start(goremanAddr, []byte(strings.Join(procfile, "\n")))
+	err = goreman.Start([]byte(strings.Join(procfile, "\n")), goreman.Options{
+		RPCAddr:        "127.0.0.1:5005",
+		ProcDiedAction: procDiedAction,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -9,19 +9,15 @@ import (
 
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/auth"
 	"github.com/sourcegraph/sourcegraph/enterprise/cmd/frontend/internal/licensing"
-	"github.com/sourcegraph/sourcegraph/enterprise/pkg/license"
-	"github.com/sourcegraph/sourcegraph/pkg/actor"
-	"github.com/sourcegraph/sourcegraph/pkg/conf"
+	"github.com/sourcegraph/sourcegraph/internal/actor"
+	"github.com/sourcegraph/sourcegraph/internal/conf"
 	"github.com/sourcegraph/sourcegraph/schema"
 )
 
 // SEE ALSO FOR MANUAL TESTING: See the Middleware docstring for information about the testproxy
 // helper program, which helps with manual testing of the HTTP auth proxy behavior.
 func TestMiddleware(t *testing.T) {
-	licensing.MockGetConfiguredProductLicenseInfo = func() (*license.Info, string, error) {
-		return &license.Info{Tags: licensing.EnterpriseTags}, "test-signature", nil
-	}
-	defer func() { licensing.MockGetConfiguredProductLicenseInfo = nil }()
+	defer licensing.TestingSkipFeatureChecks()()
 
 	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor := actor.FromContext(r.Context())
@@ -33,7 +29,7 @@ func TestMiddleware(t *testing.T) {
 	}))
 
 	const headerName = "x-sso-user-header"
-	conf.Mock(&conf.Unified{Critical: schema.CriticalConfiguration{AuthProviders: []schema.AuthProviders{{HttpHeader: &schema.HTTPHeaderAuthProvider{UsernameHeader: headerName}}}}})
+	conf.Mock(&conf.Unified{SiteConfiguration: schema.SiteConfiguration{AuthProviders: []schema.AuthProviders{{HttpHeader: &schema.HTTPHeaderAuthProvider{UsernameHeader: headerName}}}}})
 	defer conf.Mock(nil)
 
 	t.Run("not sent", func(t *testing.T) {
@@ -91,7 +87,7 @@ func TestMiddleware(t *testing.T) {
 	t.Run("sent, with un-normalized username", func(t *testing.T) {
 		rr := httptest.NewRecorder()
 		req, _ := http.NewRequest("GET", "/", nil)
-		req.Header.Set(headerName, "alice.zhao")
+		req.Header.Set(headerName, "alice_zhao")
 		const wantNormalizedUsername = "alice-zhao"
 		var calledMock bool
 		auth.MockGetAndSaveUser = func(ctx context.Context, op auth.GetAndSaveUserOp) (userID int32, safeErrMsg string, err error) {
@@ -99,7 +95,7 @@ func TestMiddleware(t *testing.T) {
 			if op.UserProps.Username != wantNormalizedUsername {
 				t.Errorf("got %q, want %q", op.UserProps.Username, wantNormalizedUsername)
 			}
-			if op.ExternalAccount.ServiceType == "http-header" && op.ExternalAccount.ServiceID == "" && op.ExternalAccount.ClientID == "" && op.ExternalAccount.AccountID == "alice.zhao" {
+			if op.ExternalAccount.ServiceType == "http-header" && op.ExternalAccount.ServiceID == "" && op.ExternalAccount.ClientID == "" && op.ExternalAccount.AccountID == "alice_zhao" {
 				return 1, "", nil
 			}
 			return 0, "safeErr", fmt.Errorf("account %v not found in mock", op.ExternalAccount)
@@ -116,10 +112,7 @@ func TestMiddleware(t *testing.T) {
 }
 
 func TestMiddleware_stripPrefix(t *testing.T) {
-	licensing.MockGetConfiguredProductLicenseInfo = func() (*license.Info, string, error) {
-		return &license.Info{Tags: licensing.EnterpriseTags}, "test-signature", nil
-	}
-	defer func() { licensing.MockGetConfiguredProductLicenseInfo = nil }()
+	defer licensing.TestingSkipFeatureChecks()()
 
 	handler := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		actor := actor.FromContext(r.Context())
@@ -131,7 +124,7 @@ func TestMiddleware_stripPrefix(t *testing.T) {
 	}))
 
 	const headerName = "x-sso-user-header"
-	conf.Mock(&conf.Unified{Critical: schema.CriticalConfiguration{
+	conf.Mock(&conf.Unified{SiteConfiguration: schema.SiteConfiguration{
 		AuthProviders: []schema.AuthProviders{
 			{
 				HttpHeader: &schema.HTTPHeaderAuthProvider{

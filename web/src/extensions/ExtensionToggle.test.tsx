@@ -10,7 +10,7 @@ describe('ExtensionToggle', () => {
     const SUBJECT: ConfiguredSubjectOrError = {
         lastID: null,
         settings: {},
-        // tslint:disable-next-line:no-object-literal-type-assertion
+        // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
         subject: { __typename: 'User', id: 'u', viewerCanAdminister: true } as SettingsSubject,
     }
     const EXTENSION: Pick<ConfiguredRegistryExtension, 'id'> = {

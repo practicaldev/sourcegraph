@@ -1,5 +1,4 @@
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import { upperFirst } from 'lodash'
 import AlertCircleIcon from 'mdi-react/AlertCircleIcon'
 import MapSearchIcon from 'mdi-react/MapSearchIcon'
 import * as React from 'react'
@@ -11,15 +10,15 @@ import { gql } from '../../../../shared/src/graphql/graphql'
 import * as GQL from '../../../../shared/src/graphql/schema'
 import { PlatformContextProps } from '../../../../shared/src/platform/context'
 import { SettingsCascadeProps } from '../../../../shared/src/settings/settings'
-import { ErrorLike, isErrorLike } from '../../../../shared/src/util/errors'
-import { createAggregateError } from '../../../../shared/src/util/errors'
+import { createAggregateError, ErrorLike, isErrorLike, asError } from '../../../../shared/src/util/errors'
 import { queryGraphQL } from '../../backend/graphql'
 import { ErrorBoundary } from '../../components/ErrorBoundary'
 import { HeroPage } from '../../components/HeroPage'
-import { ThemeProps } from '../../theme'
 import { RouteDescriptor } from '../../util/contributions'
 import { ExtensionsAreaRouteContext } from '../ExtensionsArea'
 import { ExtensionAreaHeader, ExtensionAreaHeaderNavItem } from './ExtensionAreaHeader'
+import { ThemeProps } from '../../../../shared/src/theme'
+import { ErrorMessage } from '../../components/alerts'
 
 export const registryExtensionFragment = gql`
     fragment RegistryExtensionFields on RegistryExtension {
@@ -58,7 +57,7 @@ export const registryExtensionFragment = gql`
     }
 `
 
-const NotFoundPage = () => <HeroPage icon={MapSearchIcon} title="404: Not Found" />
+const NotFoundPage: React.FunctionComponent = () => <HeroPage icon={MapSearchIcon} title="404: Not Found" />
 
 export interface ExtensionAreaRoute extends RouteDescriptor<ExtensionAreaRouteContext> {}
 
@@ -66,8 +65,8 @@ export interface ExtensionAreaProps
     extends ExtensionsAreaRouteContext,
         RouteComponentProps<{ extensionID: string }>,
         ThemeProps {
-    routes: ReadonlyArray<ExtensionAreaRoute>
-    extensionAreaHeaderNavItems: ReadonlyArray<ExtensionAreaHeaderNavItem>
+    routes: readonly ExtensionAreaRoute[]
+    extensionAreaHeaderNavItems: readonly ExtensionAreaHeaderNavItem[]
 }
 
 interface ExtensionAreaState {
@@ -121,20 +120,20 @@ export class ExtensionArea extends React.Component<ExtensionAreaProps> {
 
         // Fetch extension.
         this.subscriptions.add(
-            combineLatest(
+            combineLatest([
                 extensionIDChanges,
                 merge(
                     this.refreshRequests.pipe(mapTo(false)),
                     globalExtensionsSettingsChanges.pipe(mapTo(false)),
                     of(false)
-                )
-            )
+                ),
+            ])
                 .pipe(
                     switchMap(([extensionID, forceRefresh]) => {
                         type PartialStateUpdate = Pick<ExtensionAreaState, 'extensionOrError'>
                         return queryExtension(extensionID).pipe(
-                            catchError(error => [error]),
-                            map(c => ({ extensionOrError: c } as PartialStateUpdate)),
+                            catchError((error): [ErrorLike] => [asError(error)]),
+                            map((c): PartialStateUpdate => ({ extensionOrError: c })),
 
                             // Don't clear old data while we reload, to avoid unmounting all components during
                             // loading.
@@ -142,14 +141,17 @@ export class ExtensionArea extends React.Component<ExtensionAreaProps> {
                         )
                     })
                 )
-                .subscribe(stateUpdate => this.setState(stateUpdate), err => console.error(err))
+                .subscribe(
+                    stateUpdate => this.setState(stateUpdate),
+                    err => console.error(err)
+                )
         )
 
         this.componentUpdates.next(this.props)
     }
 
-    public componentWillReceiveProps(props: ExtensionAreaProps): void {
-        this.componentUpdates.next(props)
+    public componentDidUpdate(): void {
+        this.componentUpdates.next(this.props)
     }
 
     public componentWillUnmount(): void {
@@ -165,7 +167,7 @@ export class ExtensionArea extends React.Component<ExtensionAreaProps> {
                 <HeroPage
                     icon={AlertCircleIcon}
                     title="Error"
-                    subtitle={upperFirst(this.state.extensionOrError.message)}
+                    subtitle={<ErrorMessage error={this.state.extensionOrError} history={this.props.history} />}
                 />
             )
         }
@@ -184,25 +186,31 @@ export class ExtensionArea extends React.Component<ExtensionAreaProps> {
         }
 
         return (
-            <div className="registry-extension-area area--vertical">
-                <ExtensionAreaHeader {...this.props} {...context} navItems={this.props.extensionAreaHeaderNavItems} />
+            <div className="registry-extension-area">
+                <ExtensionAreaHeader
+                    {...this.props}
+                    {...context}
+                    navItems={this.props.extensionAreaHeaderNavItems}
+                    className="border-bottom mt-4"
+                />
                 <div className="container pt-3">
                     <ErrorBoundary location={this.props.location}>
                         <React.Suspense fallback={<LoadingSpinner className="icon-inline m-2" />}>
                             <Switch>
                                 {this.props.routes.map(
+                                    /* eslint-disable react/jsx-no-bind */
                                     ({ path, render, exact, condition = () => true }) =>
                                         condition(context) && (
                                             <Route
                                                 path={url + path}
                                                 exact={exact}
                                                 key="hardcoded-key" // see https://github.com/ReactTraining/react-router/issues/4578#issuecomment-334489490
-                                                // tslint:disable-next-line:jsx-no-lambda
                                                 render={routeComponentProps =>
                                                     render({ ...context, ...routeComponentProps })
                                                 }
                                             />
                                         )
+                                    /* eslint-enable react/jsx-no-bind */
                                 )}
                                 <Route key="hardcoded-key" component={NotFoundPage} />
                             </Switch>
@@ -213,10 +221,10 @@ export class ExtensionArea extends React.Component<ExtensionAreaProps> {
         )
     }
 
-    private onDidUpdateExtension = () => this.refreshRequests.next()
+    private onDidUpdateExtension = (): void => this.refreshRequests.next()
 }
 
-function queryExtension(extensionID: string): Observable<ConfiguredRegistryExtension> {
+function queryExtension(extensionID: string): Observable<ConfiguredRegistryExtension<GQL.IRegistryExtension>> {
     return queryGraphQL(
         gql`
             query RegistryExtension($extensionID: String!) {

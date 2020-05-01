@@ -1,20 +1,51 @@
-import { Endpoint, isEndpoint } from '@sourcegraph/comlink'
+import { Endpoint } from '@sourcegraph/comlink'
 import { NextObserver, Observable, Subscribable } from 'rxjs'
 import { SettingsEdit } from '../api/client/services/settings'
 import { GraphQLResult } from '../graphql/graphql'
 import * as GQL from '../graphql/schema'
 import { Settings, SettingsCascadeOrError } from '../settings/settings'
-import { FileSpec, PositionSpec, RepoSpec, RevSpec, ViewStateSpec } from '../util/url'
+import { TelemetryService } from '../telemetry/telemetryService'
+import { FileSpec, UIPositionSpec, RawRepoSpec, RepoSpec, RevSpec, ViewStateSpec } from '../util/url'
+import { DiffPart } from '@sourcegraph/codeintellify'
+import { isObject } from 'lodash'
+import { hasProperty } from '../util/types'
 
 export interface EndpointPair {
     /** The endpoint to proxy the API of the other thread from */
-    proxy: Endpoint & Pick<MessagePort, 'start'>
+    proxy: Endpoint
 
     /** The endpoint to expose the API of this thread to */
-    expose: Endpoint & Pick<MessagePort, 'start'>
+    expose: Endpoint
 }
-export const isEndpointPair = (val: any): val is EndpointPair =>
-    typeof val === 'object' && val !== null && isEndpoint(val.proxy) && isEndpoint(val.expose)
+
+const isEndpoint = (value: unknown): value is Endpoint =>
+    isObject(value) &&
+    hasProperty('addEventListener')(value) &&
+    hasProperty('removeEventListener')(value) &&
+    hasProperty('postMessage')(value) &&
+    typeof value.addEventListener === 'function' &&
+    typeof value.removeEventListener === 'function' &&
+    typeof value.postMessage === 'function'
+
+export const isEndpointPair = (value: unknown): value is EndpointPair =>
+    isObject(value) &&
+    hasProperty('proxy')(value) &&
+    hasProperty('expose')(value) &&
+    isEndpoint(value.proxy) &&
+    isEndpoint(value.expose)
+
+/**
+ * Context information of an invocation of `urlToFile`
+ */
+export interface URLToFileContext {
+    /**
+     * If `urlToFile` is called because of a go to definition invocation on a diff,
+     * the part of the diff it was invoked on.
+     */
+    part: DiffPart | undefined
+
+    isWebURL?: boolean
+}
 
 /**
  * Platform-specific data and methods shared by multiple Sourcegraph components.
@@ -53,17 +84,24 @@ export interface PlatformContext {
      * Sends a request to the Sourcegraph GraphQL API and returns the response.
      *
      * @template R The GraphQL result type
-     * @param request The GraphQL request (query or mutation)
-     * @param variables An object whose properties are GraphQL query name-value variable pairs
-     * @param mightContainPrivateInfo 🚨 SECURITY: Whether or not sending the GraphQL request to Sourcegraph.com
      * could leak private information such as repository names.
-     * @return Observable that emits the result or an error if the HTTP request failed
+     * @returns Observable that emits the result or an error if the HTTP request failed
      */
-    queryGraphQL<R extends GQL.IQuery | GQL.IMutation>(
-        request: string,
-        variables?: { [name: string]: any },
-        mightContainPrivateInfo?: boolean
-    ): Subscribable<GraphQLResult<R>>
+    requestGraphQL<R extends GQL.IQuery | GQL.IMutation>(options: {
+        /**
+         * The GraphQL request (query or mutation)
+         */
+        request: string
+        /**
+         * An object whose properties are GraphQL query name-value variable pairs
+         */
+        variables: {}
+        /**
+         * 🚨 SECURITY: Whether or not sending the GraphQL request to Sourcegraph.com
+         * could leak private information such as repository names.
+         */
+        mightContainPrivateInfo: boolean
+    }): Observable<GraphQLResult<R>>
 
     /**
      * Forces the currently displayed tooltip, if any, to update its contents.
@@ -88,7 +126,7 @@ export interface PlatformContext {
      * to importScripts.
      *
      * @param bundleURL The URL to the JavaScript bundle file specified in the extension manifest.
-     * @return A script URL suitable for passing to importScripts, typically either the original
+     * @returns A script URL suitable for passing to importScripts, typically either the original
      * https:// URL for the extension's bundle or a blob: URI for it.
      */
     getScriptURLForExtension(bundleURL: string): string | Promise<string>
@@ -96,10 +134,14 @@ export interface PlatformContext {
     /**
      * Constructs the URL (possibly relative or absolute) to the file with the specified options.
      *
-     * @param location The specific repository, revision, file, position, and view state to generate the URL for.
-     * @return The URL to the file with the specified options.
+     * @param target The specific repository, revision, file, position, and view state to generate the URL for.
+     * @param context Contextual information about the context of this invocation.
+     * @returns The URL to the file with the specified options.
      */
-    urlToFile(location: RepoSpec & RevSpec & FileSpec & Partial<PositionSpec> & Partial<ViewStateSpec>): string
+    urlToFile(
+        target: RepoSpec & Partial<RawRepoSpec> & RevSpec & FileSpec & Partial<UIPositionSpec> & Partial<ViewStateSpec>,
+        context: URLToFileContext
+    ): string
 
     /**
      * The URL to the Sourcegraph site that the user's session is associated with. This refers to
@@ -131,6 +173,12 @@ export interface PlatformContext {
      * Used for extension development purposes, to run an extension that isn't on the registry.
      */
     sideloadedExtensionURL: Subscribable<string | null> & NextObserver<string | null>
+
+    /**
+     * A telemetry service implementation to log events.
+     * Optional because it's currently only used in the web app platform.
+     */
+    telemetryService?: TelemetryService
 }
 
 /**

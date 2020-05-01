@@ -5,6 +5,7 @@ import { ConfiguredRegistryExtension } from '../../../../shared/src/extensions/e
 import { isErrorLike } from '../../../../shared/src/util/errors'
 import { renderMarkdown } from '../../../../shared/src/util/markdown'
 import { ExtensionNoManifestAlert } from './RegistryExtensionManifestPage'
+import * as H from 'history'
 
 const PublishNewManifestAlert: React.FunctionComponent<{
     extension: ConfiguredRegistryExtension
@@ -27,7 +28,8 @@ const PublishNewManifestAlert: React.FunctionComponent<{
 
 export const ExtensionREADME: React.FunctionComponent<{
     extension: ConfiguredRegistryExtension
-}> = ({ extension }) => {
+    history: H.History
+}> = ({ extension, history }) => {
     if (!extension.rawManifest) {
         return <ExtensionNoManifestAlert extension={extension} />
     }
@@ -39,7 +41,7 @@ export const ExtensionREADME: React.FunctionComponent<{
                 extension={extension}
                 alertClass="alert-danger"
                 text={`This extension's manifest is invalid: ${
-                    manifest && manifest.message ? manifest.message : 'JSON parse error'
+                    manifest?.message ? manifest.message : 'JSON parse error'
                 }`}
                 buttonLabel="Fix manifest and publish new release"
             />
@@ -51,7 +53,7 @@ export const ExtensionREADME: React.FunctionComponent<{
             <PublishNewManifestAlert
                 extension={extension}
                 alertClass="alert-info"
-                text={`This extension has no README.`}
+                text="This extension has no README."
                 buttonLabel="Add README and publish new release"
             />
         )
@@ -59,7 +61,7 @@ export const ExtensionREADME: React.FunctionComponent<{
 
     try {
         const html = renderMarkdown(manifest.readme)
-        return <Markdown dangerousInnerHTML={html} />
+        return <Markdown dangerousInnerHTML={html} history={history} />
     } catch (err) {
         return (
             <PublishNewManifestAlert

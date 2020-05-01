@@ -1,13 +1,12 @@
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import CheckIcon from 'mdi-react/CheckIcon'
-import CloseIcon from 'mdi-react/CloseIcon'
+import CloudDownloadIcon from 'mdi-react/CloudDownloadIcon'
 import CloudOutlineIcon from 'mdi-react/CloudOutlineIcon'
 import SettingsIcon from 'mdi-react/SettingsIcon'
 import * as React from 'react'
 import { RouteComponentProps } from 'react-router'
 import { Link } from 'react-router-dom'
-import { Subject } from 'rxjs'
-import { Activation, ActivationProps } from '../../../shared/src/components/activation/Activation'
+import { Subject, Observable } from 'rxjs'
+import { ActivationProps } from '../../../shared/src/components/activation/Activation'
 import { RepoLink } from '../../../shared/src/components/RepoLink'
 import * as GQL from '../../../shared/src/graphql/schema'
 import {
@@ -18,74 +17,53 @@ import {
 import { PageTitle } from '../components/PageTitle'
 import { refreshSiteFlags } from '../site/backend'
 import { eventLogger } from '../tracking/eventLogger'
-import {
-    fetchAllRepositoriesAndPollIfAnyCloning,
-    setAllRepositoriesEnabled,
-    setRepositoryEnabled,
-    updateAllMirrorRepositories,
-    updateMirrorRepository,
-} from './backend'
+import { fetchAllRepositoriesAndPollIfEmptyOrAnyCloning } from './backend'
+import { ErrorAlert } from '../components/alerts'
+import * as H from 'history'
 
 interface RepositoryNodeProps extends ActivationProps {
     node: GQL.IRepository
     onDidUpdate?: () => void
+    history: H.History
 }
 
 interface RepositoryNodeState {
-    loading: boolean
     errorDescription?: string
 }
 
 class RepositoryNode extends React.PureComponent<RepositoryNodeProps, RepositoryNodeState> {
-    public state: RepositoryNodeState = {
-        loading: false,
-    }
+    public state: RepositoryNodeState = {}
 
     public render(): JSX.Element | null {
         return (
             <li
                 className="repository-node list-group-item py-2"
                 data-e2e-repository={this.props.node.name}
-                data-e2e-enabled={this.props.node.enabled}
                 data-e2e-cloned={this.props.node.mirrorInfo.cloned}
             >
                 <div className="d-flex align-items-center justify-content-between">
                     <div>
                         <RepoLink repoName={this.props.node.name} to={this.props.node.url} />
-                        {this.props.node.enabled ? (
-                            <small
-                                data-tooltip="Access to this repository is enabled. All users can view and search it."
-                                className="ml-2 text-success"
-                            >
-                                <CheckIcon className="icon-inline" />
-                                Enabled
-                            </small>
-                        ) : (
-                            <small
-                                data-tooltip="Access to this repository is disabled. Enable access to it to allow users to view and search it."
-                                className="ml-2 text-danger"
-                            >
-                                <CloseIcon className="icon-inline" />
-                                Disabled
-                            </small>
-                        )}
                         {this.props.node.mirrorInfo.cloneInProgress && (
                             <small className="ml-2 text-success">
                                 <LoadingSpinner className="icon-inline" /> Cloning
                             </small>
                         )}
-                        {this.props.node.enabled &&
-                            !this.props.node.mirrorInfo.cloneInProgress &&
-                            !this.props.node.mirrorInfo.cloned && (
-                                <small
-                                    className="ml-2 text-muted"
-                                    data-tooltip="Visit the repository to clone it. See its mirroring settings for diagnostics."
-                                >
-                                    <CloudOutlineIcon className="icon-inline" /> Not yet cloned
-                                </small>
-                            )}
+                        {!this.props.node.mirrorInfo.cloneInProgress && !this.props.node.mirrorInfo.cloned && (
+                            <small
+                                className="ml-2 text-muted"
+                                data-tooltip="Visit the repository to clone it. See its mirroring settings for diagnostics."
+                            >
+                                <CloudOutlineIcon className="icon-inline" /> Not yet cloned
+                            </small>
+                        )}
                     </div>
                     <div className="repository-node__actions">
+                        {!this.props.node.mirrorInfo.cloneInProgress && !this.props.node.mirrorInfo.cloned && (
+                            <Link className="btn btn-sm btn-secondary" to={this.props.node.url}>
+                                <CloudDownloadIcon className="icon-inline" /> Clone now
+                            </Link>
+                        )}{' '}
                         {
                             <Link
                                 className="btn btn-secondary btn-sm"
@@ -95,103 +73,45 @@ class RepositoryNode extends React.PureComponent<RepositoryNodeProps, Repository
                                 <SettingsIcon className="icon-inline" /> Settings
                             </Link>
                         }{' '}
-                        {this.props.node.enabled ? (
-                            <button
-                                className="btn btn-secondary btn-sm"
-                                onClick={this.disableRepository}
-                                disabled={this.state.loading}
-                                data-tooltip="Disable access to the repository. Users will be unable to view and search it."
-                            >
-                                Disable
-                            </button>
-                        ) : (
-                            <button
-                                className="btn btn-success btn-sm e2e-enable-repository"
-                                onClick={this.enableRepository}
-                                disabled={this.state.loading}
-                                data-tooltip="Enable access to the repository. Users will be able to view and search it."
-                            >
-                                Enable
-                            </button>
-                        )}
                     </div>
                 </div>
                 {this.state.errorDescription && (
-                    <div className="alert alert-danger mt-2">{this.state.errorDescription}</div>
+                    <ErrorAlert className="mt-2" error={this.state.errorDescription} history={this.props.history} />
                 )}
             </li>
         )
     }
-
-    private enableRepository = () => this.setRepositoryEnabled(true)
-    private disableRepository = () => this.setRepositoryEnabled(false)
-
-    private setRepositoryEnabled(enabled: boolean): void {
-        this.setState({
-            errorDescription: undefined,
-            loading: true,
-        })
-
-        const promises: Promise<any>[] = [setRepositoryEnabled(this.props.node.id, enabled).toPromise()]
-        if (enabled) {
-            promises.push(updateMirrorRepository({ repository: this.props.node.id }).toPromise())
-        }
-        Promise.all(promises).then(
-            () => {
-                if (this.props.onDidUpdate) {
-                    this.props.onDidUpdate()
-                }
-                this.setState({ loading: false })
-                activate(this.props.activation)
-            },
-            err => this.setState({ loading: false, errorDescription: err.message })
-        )
-    }
 }
 
-interface Props extends RouteComponentProps<any>, ActivationProps {}
-
-class FilteredRepositoryConnection extends FilteredConnection<GQL.IRepository, ActivationProps> {}
+interface Props extends RouteComponentProps<{}>, ActivationProps {}
 
 /**
  * A page displaying the repositories on this site.
  */
-export class SiteAdminRepositoriesPage extends React.PureComponent<Props, {}> {
+export class SiteAdminRepositoriesPage extends React.PureComponent<Props> {
     private static FILTERS: FilteredConnectionFilter[] = [
         {
             label: 'All',
             id: 'all',
             tooltip: 'Show all repositories',
-            args: { enabled: true, disabled: true },
-        },
-        {
-            label: 'Enabled',
-            id: 'enabled',
-            tooltip: 'Show access-enabled repositories only',
-            args: { enabled: true, disabled: false },
-        },
-        {
-            label: 'Disabled',
-            id: 'disabled',
-            tooltip: 'Show access-disabled repositories only',
-            args: { enabled: false, disabled: true },
+            args: {},
         },
         {
             label: 'Cloned',
             id: 'cloned',
             tooltip: 'Show cloned repositories only',
-            args: { disabled: true, cloned: true, cloneInProgress: false, notCloned: false },
+            args: { cloned: true, cloneInProgress: false, notCloned: false },
         },
         {
             label: 'Cloning',
             id: 'cloning',
             tooltip: 'Show only repositories that are currently being cloned',
-            args: { disabled: true, cloned: false, cloneInProgress: true, notCloned: false },
+            args: { cloned: false, cloneInProgress: true, notCloned: false },
         },
         {
             label: 'Not cloned',
             id: 'not-cloned',
-            tooltip: 'Show only enabled repositories that have not been cloned yet',
+            tooltip: 'Show only repositories that have not been cloned yet',
             args: { cloned: false, cloneInProgress: false, notCloned: true },
         },
         {
@@ -221,22 +141,21 @@ export class SiteAdminRepositoriesPage extends React.PureComponent<Props, {}> {
     }
 
     public render(): JSX.Element | null {
-        const nodeProps: Pick<RepositoryNodeProps, 'onDidUpdate' | 'activation'> = {
+        const nodeProps: Omit<RepositoryNodeProps, 'node'> = {
             onDidUpdate: this.onDidUpdateRepository,
             activation: this.props.activation,
+            history: this.props.history,
         }
 
         return (
             <div className="site-admin-repositories-page">
                 <PageTitle title="Repositories - Admin" />
-                <div className="d-flex justify-content-between align-items-center mt-3 mb-1">
-                    <h2 className="mb-0">Repositories</h2>
-                </div>
+                <h2>Repositories</h2>
                 <p>
-                    Repositories are mirrored from connected{' '}
-                    <Link to="/site-admin/external-services">external services</Link>.
+                    Repositories are synced from connected{' '}
+                    <Link to="/site-admin/external-services">code host connections</Link>.
                 </p>
-                <FilteredRepositoryConnection
+                <FilteredConnection<GQL.IRepository, Omit<RepositoryNodeProps, 'node'>>
                     className="list-group list-group-flush mt-3"
                     noun="repository"
                     pluralNoun="repositories"
@@ -248,60 +167,12 @@ export class SiteAdminRepositoriesPage extends React.PureComponent<Props, {}> {
                     history={this.props.history}
                     location={this.props.location}
                 />
-                {!window.context.sourcegraphDotComMode && (
-                    <div className="my-4">
-                        <button className="btn btn-secondary" onClick={this.disableAllRepostiories}>
-                            Disable all
-                        </button>{' '}
-                        <button className="btn btn-secondary" onClick={this.enableAllRepostiories}>
-                            Enable and clone all
-                        </button>
-                    </div>
-                )}
             </div>
         )
     }
 
-    private queryRepositories = (args: FilteredConnectionQueryArgs) =>
-        fetchAllRepositoriesAndPollIfAnyCloning({ ...args })
+    private queryRepositories = (args: FilteredConnectionQueryArgs): Observable<GQL.IRepositoryConnection> =>
+        fetchAllRepositoriesAndPollIfEmptyOrAnyCloning({ ...args })
 
-    private onDidUpdateRepository = () => this.repositoryUpdates.next()
-
-    private enableAllRepostiories = () => this.setAllRepositoriesEnabled(true)
-    private disableAllRepostiories = () => this.setAllRepositoriesEnabled(false)
-
-    private setAllRepositoriesEnabled(enabled: boolean): void {
-        if (
-            enabled &&
-            !confirm(
-                `Enabling and cloning all repositories may take some time and use significant resources. This will enable and clone all accessible repositories, and is not limited to your current search filter. Enable and clone all repositories?`
-            )
-        ) {
-            return
-        }
-
-        eventLogger.log(enabled ? 'EnableAllReposClicked' : 'DisableAllReposClicked')
-
-        const promises: Promise<any>[] = [setAllRepositoriesEnabled(enabled).toPromise()]
-        if (enabled) {
-            promises.push(updateAllMirrorRepositories().toPromise())
-        }
-        Promise.all(promises).then(
-            () => {
-                activate(this.props.activation)
-                this.onDidUpdateRepository()
-            },
-            // If one (or more) repositories fail, still update the UI before re-throwing
-            err => {
-                this.onDidUpdateRepository()
-                throw err
-            }
-        )
-    }
-}
-
-function activate(activation?: Activation): void {
-    if (activation) {
-        activation.update({ EnabledRepository: true })
-    }
+    private onDidUpdateRepository = (): void => this.repositoryUpdates.next()
 }

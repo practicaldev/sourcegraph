@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 
-	"github.com/sourcegraph/sourcegraph/pkg/env"
+	"github.com/pkg/errors"
+	"github.com/sourcegraph/sourcegraph/internal/env"
 )
 
 type Entry struct {
@@ -47,6 +48,10 @@ func isCommandAvailable(name string) bool {
 
 var ctagsCommand = env.Get("CTAGS_COMMAND", "universal-ctags", "ctags command (should point to universal-ctags executable compiled with JSON and seccomp support)")
 
+// Increasing this value may increase the size of the symbols cache, but will also stop long lines containing symbols from
+// being highlighted improperly. See https://github.com/sourcegraph/sourcegraph/issues/7668.
+var rawPatternLengthLimit = env.Get("CTAGS_PATTERN_LENGTH_LIMIT", "250", "the maximum length of the patterns output by ctags")
+
 // GetCommand returns the ctags command from the CTAGS_COMMAND environment
 // variable, falling back to `universal-ctags`. Panics if the command doesn't
 // exist.
@@ -58,6 +63,11 @@ func GetCommand() string {
 }
 
 func NewParser(ctagsCommand string) (Parser, error) {
+	patternLengthLimit, err := strconv.Atoi(rawPatternLengthLimit)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pattern length limit: %s", rawPatternLengthLimit)
+	}
+
 	opt := "default"
 
 	// TODO(sqs): Figure out why running with --_interactive=sandbox causes `Bad system call` inside Docker, and
@@ -67,8 +77,8 @@ func NewParser(ctagsCommand string) (Parser, error) {
 	//  opt = "sandbox"
 	// }
 
-	cmd := exec.Command(ctagsCommand, "--_interactive="+opt, "--fields=*",
-		"--languages=Basic,C,C#,C++,Clojure,Cobol,CSS,CUDA,D,Elixir,elm,Erlang,Go,haskell,Java,JavaScript,kotlin,Lisp,Lua,MatLab,ObjectiveC,OCaml,Perl,Perl6,PHP,Protobuf,Python,R,Ruby,Rust,scala,Scheme,Sh,swift,Tcl,typescript,Verilog,Vim",
+	cmd := exec.Command(ctagsCommand, "--_interactive="+opt, "--fields=*", fmt.Sprintf("--pattern-length-limit=%d", patternLengthLimit),
+		"--languages=Basic,C,C#,C++,Clojure,Cobol,CSS,CUDA,D,Elixir,elm,Erlang,Go,GraphQL,Groovy,haskell,Java,JavaScript,Jsonnet,kotlin,Lisp,Lua,MatLab,ObjectiveC,OCaml,Pascal,Perl,Perl6,PHP,Protobuf,Python,R,Ruby,Rust,scala,Scheme,Sh,swift,SystemVerilog,Tcl,Thrift,typescript,tsx,Verilog,VHDL,Vim",
 		"--map-CSS=+.scss", "--map-CSS=+.less", "--map-CSS=+.sass",
 	)
 	in, err := cmd.StdinPipe()
@@ -99,6 +109,11 @@ func NewParser(ctagsCommand string) (Parser, error) {
 		return nil, err
 	}
 
+	if init.Typ == "error" {
+		proc.Close()
+		return nil, errors.Errorf("starting %s failed with: %s", ctagsCommand, init.Message)
+	}
+
 	return &proc, nil
 }
 
@@ -110,9 +125,9 @@ type ctagsProcess struct {
 }
 
 func (p *ctagsProcess) Close() {
-	p.cmd.Process.Kill()
-	p.outPipe.Close()
-	p.in.Close()
+	_ = p.cmd.Process.Kill()
+	_ = p.outPipe.Close()
+	_ = p.in.Close()
 }
 
 func (p *ctagsProcess) read(rep *reply) error {

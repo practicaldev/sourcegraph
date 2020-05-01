@@ -1,6 +1,12 @@
 # User surveys
 
+## Submit a survey
+
 After using Sourcegraph for a few days, users are presented with a request to answer "How likely is it that you would recommend Sourcegraph to a friend?", and to provide some qualitative product feedback.
+
+Users can also always submit (or re-submit) this survey by visiting `https://sourcegraph.example.com/survey`.
+
+## View survey responses
 
 Responses to this survey are visible to all site admins on the Sourcegraph instance. View all responses on the **Site admin > User surveys** page. (The URL is `https://sourcegraph.example.com/site-admin/surveys`.)
 
@@ -10,12 +16,12 @@ Survey responses are also always sent to Sourcegraph.com.
 
 ## Restart feedback survey
 
-By default, users are only presented with the feedback survey once. Site admins may restart the feedback survey for all users (regardless of whether they have already responded). To restart the feedback survey, use the [critical configuration's `htmlBodyBottom` property](../admin/config/critical_config.md#reference):
+By default, users are only presented with the feedback survey once. Site admins may restart the feedback survey for all users (regardless of whether they have already responded). To restart the feedback survey, use the [site configuration's `htmlBodyBottom` property](../admin/config/site_config.md#reference):
 
 ```json
 {
   ...,
-  "htmlBodyBottom": "if (localStorage.getItem('reset-survey-000') === null) { localStorage.removeItem('has-dismissed-survey-toast'); localStorage.setItem('days-active-count', 3); localStorage.setItem('reset-survey-000', true); }",
+  "htmlBodyBottom": "<script>if (localStorage.getItem('reset-survey-000') === null) { localStorage.removeItem('has-dismissed-survey-toast'); localStorage.setItem('days-active-count', 3); localStorage.setItem('reset-survey-000', true); }</script>",
   ...
 }
 ```

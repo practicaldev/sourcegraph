@@ -1,20 +1,22 @@
+import 'focus-visible'
+
 import { ShortcutProvider } from '@slimsag/react-shortcuts'
 import ServerIcon from 'mdi-react/ServerIcon'
 import * as React from 'react'
+import { hot } from 'react-hot-loader/root'
 import { Route } from 'react-router'
 import { BrowserRouter } from 'react-router-dom'
 import { combineLatest, from, fromEventPattern, Subscription } from 'rxjs'
 import { startWith } from 'rxjs/operators'
 import { setLinkComponent } from '../../shared/src/components/Link'
 import {
+    Controller as ExtensionsController,
     createController as createExtensionsController,
-    ExtensionsControllerProps,
 } from '../../shared/src/extensions/controller'
 import * as GQL from '../../shared/src/graphql/schema'
 import { Notifications } from '../../shared/src/notifications/Notifications'
-import { PlatformContextProps } from '../../shared/src/platform/context'
+import { PlatformContext } from '../../shared/src/platform/context'
 import { EMPTY_SETTINGS_CASCADE, SettingsCascadeProps } from '../../shared/src/settings/settings'
-import { TelemetryContext } from '../../shared/src/telemetry/telemetryContext'
 import { isErrorLike } from '../../shared/src/util/errors'
 import { authenticatedUser } from './auth'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -27,11 +29,13 @@ import { ExtensionAreaRoute } from './extensions/extension/ExtensionArea'
 import { ExtensionAreaHeaderNavItem } from './extensions/extension/ExtensionAreaHeader'
 import { ExtensionsAreaRoute } from './extensions/ExtensionsArea'
 import { ExtensionsAreaHeaderActionButton } from './extensions/ExtensionsAreaHeader'
-import { KeybindingsProps } from './keybindings'
 import { Layout, LayoutProps } from './Layout'
 import { updateUserSessionStores } from './marketing/util'
+import { OrgAreaRoute } from './org/area/OrgArea'
+import { OrgAreaHeaderNavItem } from './org/area/OrgHeader'
 import { createPlatformContext } from './platform/context'
 import { fetchHighlightedFileLines } from './repo/backend'
+import { RepoContainerRoute } from './repo/RepoContainer'
 import { RepoHeaderActionButton } from './repo/RepoHeader'
 import { RepoRevContainerRoute } from './repo/RepoRevContainer'
 import { LayoutRouteProps } from './routes'
@@ -41,30 +45,45 @@ import { SiteAdminSideBarGroups } from './site-admin/SiteAdminSidebar'
 import { ThemePreference } from './theme'
 import { eventLogger } from './tracking/eventLogger'
 import { withActivation } from './tracking/withActivation'
-import { UserAccountAreaRoute } from './user/account/UserAccountArea'
-import { UserAccountSidebarItems } from './user/account/UserAccountSidebar'
 import { UserAreaRoute } from './user/area/UserArea'
 import { UserAreaHeaderNavItem } from './user/area/UserAreaHeader'
+import { UserSettingsAreaRoute } from './user/settings/UserSettingsArea'
+import { UserSettingsSidebarItems } from './user/settings/UserSettingsSidebar'
+import { parseSearchURLPatternType, searchURLIsCaseSensitive } from './search'
+import { KeyboardShortcutsProps } from './keyboardShortcuts/keyboardShortcuts'
+import { QueryState } from './search/helpers'
+import { RepoSettingsAreaRoute } from './repo/settings/RepoSettingsArea'
+import { RepoSettingsSideBarItem } from './repo/settings/RepoSettingsSidebar'
+import { FiltersToTypeAndValue } from '../../shared/src/search/interactive/util'
+import { generateFiltersQuery } from '../../shared/src/util/url'
+import { NotificationType } from '../../shared/src/api/client/services/notifications'
+import { SettingsExperimentalFeatures } from './schema/settings.schema'
 
-export interface SourcegraphWebAppProps extends KeybindingsProps {
-    exploreSections: ReadonlyArray<ExploreSectionDescriptor>
-    extensionAreaRoutes: ReadonlyArray<ExtensionAreaRoute>
-    extensionAreaHeaderNavItems: ReadonlyArray<ExtensionAreaHeaderNavItem>
-    extensionsAreaRoutes: ReadonlyArray<ExtensionsAreaRoute>
-    extensionsAreaHeaderActionButtons: ReadonlyArray<ExtensionsAreaHeaderActionButton>
-    siteAdminAreaRoutes: ReadonlyArray<SiteAdminAreaRoute>
+export interface SourcegraphWebAppProps extends KeyboardShortcutsProps {
+    exploreSections: readonly ExploreSectionDescriptor[]
+    extensionAreaRoutes: readonly ExtensionAreaRoute[]
+    extensionAreaHeaderNavItems: readonly ExtensionAreaHeaderNavItem[]
+    extensionsAreaRoutes: readonly ExtensionsAreaRoute[]
+    extensionsAreaHeaderActionButtons: readonly ExtensionsAreaHeaderActionButton[]
+    siteAdminAreaRoutes: readonly SiteAdminAreaRoute[]
     siteAdminSideBarGroups: SiteAdminSideBarGroups
-    siteAdminOverviewComponents: ReadonlyArray<React.ComponentType>
-    userAreaHeaderNavItems: ReadonlyArray<UserAreaHeaderNavItem>
-    userAreaRoutes: ReadonlyArray<UserAreaRoute>
-    userAccountSideBarItems: UserAccountSidebarItems
-    userAccountAreaRoutes: ReadonlyArray<UserAccountAreaRoute>
-    repoRevContainerRoutes: ReadonlyArray<RepoRevContainerRoute>
-    repoHeaderActionButtons: ReadonlyArray<RepoHeaderActionButton>
-    routes: ReadonlyArray<LayoutRouteProps>
+    siteAdminOverviewComponents: readonly React.ComponentType[]
+    userAreaHeaderNavItems: readonly UserAreaHeaderNavItem[]
+    userAreaRoutes: readonly UserAreaRoute[]
+    userSettingsSideBarItems: UserSettingsSidebarItems
+    userSettingsAreaRoutes: readonly UserSettingsAreaRoute[]
+    orgAreaHeaderNavItems: readonly OrgAreaHeaderNavItem[]
+    orgAreaRoutes: readonly OrgAreaRoute[]
+    repoContainerRoutes: readonly RepoContainerRoute[]
+    repoRevContainerRoutes: readonly RepoRevContainerRoute[]
+    repoHeaderActionButtons: readonly RepoHeaderActionButton[]
+    repoSettingsAreaRoutes: readonly RepoSettingsAreaRoute[]
+    repoSettingsSidebarItems: readonly RepoSettingsSideBarItem[]
+    routes: readonly LayoutRouteProps<any>[]
+    showCampaigns: boolean
 }
 
-interface SourcegraphWebAppState extends PlatformContextProps, SettingsCascadeProps, ExtensionsControllerProps {
+interface SourcegraphWebAppState extends SettingsCascadeProps {
     error?: Error
 
     /** The currently authenticated user (or null if the viewer is anonymous). */
@@ -84,10 +103,55 @@ interface SourcegraphWebAppState extends PlatformContextProps, SettingsCascadePr
     /**
      * The current search query in the navbar.
      */
-    navbarSearchQuery: string
+    navbarSearchQueryState: QueryState
+
+    /**
+     * The current search pattern type.
+     */
+    searchPatternType: GQL.SearchPatternType
+
+    /**
+     * Whether the current search is case sensitive.
+     */
+    searchCaseSensitivity: boolean
+
+    /**
+     * filtersInQuery is the source of truth for the filter values currently in the query.
+     *
+     * The data structure is a map, where the key is a uniquely assigned string in the form `repoType-numberOfFilterAdded`.
+     * The value is a data structure containing the fields {`type`, `value`, `editable`}.
+     * `type` is the field type of the filter (repo, file, etc.) `value` is the current value for that particular filter,
+     * and `editable` is whether the corresponding filter input is currently editable in the UI.
+     * */
+    filtersInQuery: FiltersToTypeAndValue
+
+    /**
+     * Whether interactive search mode is activated
+     */
+    interactiveSearchMode: boolean
+
+    /**
+     * Whether to display the option to toggle between interactive and omni search modes.
+     */
+    splitSearchModes: boolean
+
+    /**
+     * Whether to display the MonacoQueryInput search field.
+     */
+    smartSearchField: boolean
+}
+
+const notificationClassNames = {
+    [NotificationType.Log]: 'alert alert-secondary',
+    [NotificationType.Success]: 'alert alert-success',
+    [NotificationType.Info]: 'alert alert-info',
+    [NotificationType.Warning]: 'alert alert-warning',
+    [NotificationType.Error]: 'alert alert-danger',
 }
 
 const LIGHT_THEME_LOCAL_STORAGE_KEY = 'light-theme'
+const SEARCH_MODE_KEY = 'sg-search-mode'
+
 /** Reads the stored theme preference from localStorage */
 const readStoredThemePreference = (): ThemePreference => {
     const value = localStorage.getItem(LIGHT_THEME_LOCAL_STORAGE_KEY)
@@ -115,23 +179,39 @@ setLinkComponent(RouterLinkOrAnchor)
 const LayoutWithActivation = window.context.sourcegraphDotComMode ? Layout : withActivation(Layout)
 
 /**
- * The root component
+ * The root component.
+ *
+ * This is the non-hot-reload component. It is wrapped in `hot(...)` below to make it
+ * hot-reloadable in development.
  */
-export class SourcegraphWebApp extends React.Component<SourcegraphWebAppProps, SourcegraphWebAppState> {
-    private subscriptions = new Subscription()
-    private darkThemeMediaList = window.matchMedia('(prefers-color-scheme: dark)')
+class ColdSourcegraphWebApp extends React.Component<SourcegraphWebAppProps, SourcegraphWebAppState> {
+    private readonly subscriptions = new Subscription()
+    private readonly darkThemeMediaList = window.matchMedia('(prefers-color-scheme: dark)')
+    private readonly platformContext: PlatformContext = createPlatformContext()
+    private readonly extensionsController: ExtensionsController = createExtensionsController(this.platformContext)
 
     constructor(props: SourcegraphWebAppProps) {
         super(props)
-        const platformContext = createPlatformContext()
+        this.subscriptions.add(this.extensionsController)
+
+        // The patternType in the URL query parameter. If none is provided, default to literal.
+        // This will be updated with the default in settings when the web app mounts.
+        const urlPatternType = parseSearchURLPatternType(window.location.search) || GQL.SearchPatternType.literal
+        const urlCase = searchURLIsCaseSensitive(window.location.search)
+        const currentSearchMode = localStorage.getItem(SEARCH_MODE_KEY)
+
         this.state = {
             themePreference: readStoredThemePreference(),
             systemIsLightTheme: !this.darkThemeMediaList.matches,
-            navbarSearchQuery: '',
-            platformContext,
-            extensionsController: createExtensionsController(platformContext),
+            navbarSearchQueryState: { query: '', cursorPosition: 0 },
             settingsCascade: EMPTY_SETTINGS_CASCADE,
             viewerSubject: SITE_SUBJECT_NO_ADMIN,
+            searchPatternType: urlPatternType,
+            searchCaseSensitivity: urlCase,
+            filtersInQuery: {},
+            splitSearchModes: false,
+            interactiveSearchMode: currentSearchMode ? currentSearchMode === 'interactive' : false,
+            smartSearchField: false,
         }
     }
 
@@ -154,30 +234,56 @@ export class SourcegraphWebApp extends React.Component<SourcegraphWebAppProps, S
         )
 
         this.subscriptions.add(
-            combineLatest(from(this.state.platformContext.settings), authenticatedUser.pipe(startWith(null))).subscribe(
+            combineLatest([from(this.platformContext.settings), authenticatedUser.pipe(startWith(null))]).subscribe(
                 ([cascade, authenticatedUser]) => {
                     this.setState(() => {
                         if (authenticatedUser) {
                             return { viewerSubject: authenticatedUser }
-                        } else if (
-                            cascade &&
-                            !isErrorLike(cascade) &&
-                            cascade.subjects &&
-                            cascade.subjects.length > 0
-                        ) {
-                            return { viewerSubject: cascade.subjects[0].subject }
-                        } else {
-                            return { viewerSubject: SITE_SUBJECT_NO_ADMIN }
                         }
+                        if (cascade && !isErrorLike(cascade) && cascade.subjects && cascade.subjects.length > 0) {
+                            return { viewerSubject: cascade.subjects[0].subject }
+                        }
+                        return { viewerSubject: SITE_SUBJECT_NO_ADMIN }
                     })
                 }
             )
         )
 
-        this.subscriptions.add(this.state.extensionsController)
+        this.subscriptions.add(
+            from(this.platformContext.settings).subscribe(settingsCascade => this.setState({ settingsCascade }))
+        )
 
         this.subscriptions.add(
-            from(this.state.platformContext.settings).subscribe(settingsCascade => this.setState({ settingsCascade }))
+            from(this.platformContext.settings).subscribe(settingsCascade => {
+                if (!parseSearchURLPatternType(window.location.search)) {
+                    // When the web app mounts, if the current page does not have a patternType URL
+                    // parameter, set the search pattern type to the defaultPatternType from settings
+                    // (if it is set), otherwise default to literal.
+                    //
+                    // For search result URLs that have no patternType= query parameter,
+                    // the `SearchResults` component will append &patternType=regexp
+                    // to the URL to ensure legacy search links continue to work.
+                    const defaultPatternType =
+                        settingsCascade.final &&
+                        !isErrorLike(settingsCascade.final) &&
+                        settingsCascade.final['search.defaultPatternType']
+
+                    const searchPatternType = defaultPatternType || 'literal'
+
+                    this.setState({ searchPatternType })
+                }
+            })
+        )
+
+        this.subscriptions.add(
+            from(this.platformContext.settings).subscribe(settingsCascade => {
+                if (settingsCascade.final && !isErrorLike(settingsCascade.final)) {
+                    const experimentalFeatures: SettingsExperimentalFeatures =
+                        settingsCascade.final.experimentalFeatures || {}
+                    const { splitSearchModes = true, smartSearchField = false } = experimentalFeatures
+                    this.setState({ splitSearchModes, smartSearchField })
+                }
+            })
         )
 
         // React to OS theme change
@@ -205,6 +311,28 @@ export class SourcegraphWebApp extends React.Component<SourcegraphWebAppProps, S
         document.body.classList.toggle('theme-dark', !this.isLightTheme())
     }
 
+    private toggleSearchMode = (event: React.MouseEvent<HTMLAnchorElement>): void => {
+        event.preventDefault()
+        localStorage.setItem(SEARCH_MODE_KEY, this.state.interactiveSearchMode ? 'plain' : 'interactive')
+
+        eventLogger.log('SearchModeToggled', { mode: this.state.interactiveSearchMode ? 'plain' : 'interactive' })
+
+        if (this.state.interactiveSearchMode) {
+            const queries = [this.state.navbarSearchQueryState.query, generateFiltersQuery(this.state.filtersInQuery)]
+            const newQuery = queries.filter(query => query.length > 0).join(' ')
+
+            this.setState(state => ({
+                interactiveSearchMode: !state.interactiveSearchMode,
+                navbarSearchQueryState: { query: newQuery, cursorPosition: newQuery.length },
+                filtersInQuery: {},
+            }))
+        } else {
+            this.setState(state => ({
+                interactiveSearchMode: !state.interactiveSearchMode,
+            }))
+        }
+    }
+
     public render(): React.ReactFragment | null {
         if (window.pageError && window.pageError.statusCode !== 404) {
             const statusCode = window.pageError.statusCode
@@ -220,7 +348,7 @@ export class SourcegraphWebApp extends React.Component<SourcegraphWebAppProps, S
                 subtitle = (
                     <div className="app__error">
                         {subtitle}
-                        {subtitle && <hr />}
+                        {subtitle && <hr className="my-3" />}
                         <pre>{errorMessage}</pre>
                     </div>
                 )
@@ -240,49 +368,81 @@ export class SourcegraphWebApp extends React.Component<SourcegraphWebAppProps, S
         return (
             <ErrorBoundary location={null}>
                 <ShortcutProvider>
-                    <TelemetryContext.Provider value={eventLogger}>
-                        <BrowserRouter key={0}>
-                            <Route
-                                path="/"
-                                // tslint:disable-next-line:jsx-no-lambda RouteProps.render is an exception
-                                render={routeComponentProps => (
-                                    <LayoutWithActivation
-                                        {...props}
-                                        {...routeComponentProps}
-                                        authenticatedUser={authenticatedUser}
-                                        viewerSubject={this.state.viewerSubject}
-                                        settingsCascade={this.state.settingsCascade}
-                                        // Theme
-                                        isLightTheme={this.isLightTheme()}
-                                        themePreference={this.state.themePreference}
-                                        onThemePreferenceChange={this.onThemePreferenceChange}
-                                        // Search query
-                                        navbarSearchQuery={this.state.navbarSearchQuery}
-                                        onNavbarQueryChange={this.onNavbarQueryChange}
-                                        fetchHighlightedFileLines={fetchHighlightedFileLines}
-                                        searchRequest={search}
-                                        // Extensions
-                                        platformContext={this.state.platformContext}
-                                        extensionsController={this.state.extensionsController}
-                                        eventLogger={eventLogger}
-                                        isSourcegraphDotCom={window.context.sourcegraphDotComMode}
-                                    />
-                                )}
-                            />
-                        </BrowserRouter>
-                        <Tooltip key={1} />
-                        <Notifications key={2} extensionsController={this.state.extensionsController} />
-                    </TelemetryContext.Provider>
+                    <BrowserRouter key={0}>
+                        {/* eslint-disable react/jsx-no-bind */}
+                        <Route
+                            path="/"
+                            render={routeComponentProps => (
+                                <LayoutWithActivation
+                                    {...props}
+                                    {...routeComponentProps}
+                                    authenticatedUser={authenticatedUser}
+                                    viewerSubject={this.state.viewerSubject}
+                                    settingsCascade={this.state.settingsCascade}
+                                    showCampaigns={this.props.showCampaigns}
+                                    // Theme
+                                    isLightTheme={this.isLightTheme()}
+                                    themePreference={this.state.themePreference}
+                                    onThemePreferenceChange={this.onThemePreferenceChange}
+                                    // Search query
+                                    navbarSearchQueryState={this.state.navbarSearchQueryState}
+                                    onNavbarQueryChange={this.onNavbarQueryChange}
+                                    fetchHighlightedFileLines={fetchHighlightedFileLines}
+                                    searchRequest={search}
+                                    // Extensions
+                                    platformContext={this.platformContext}
+                                    extensionsController={this.extensionsController}
+                                    telemetryService={eventLogger}
+                                    isSourcegraphDotCom={window.context.sourcegraphDotComMode}
+                                    patternType={this.state.searchPatternType}
+                                    caseSensitive={this.state.searchCaseSensitivity}
+                                    splitSearchModes={this.state.splitSearchModes}
+                                    interactiveSearchMode={this.state.interactiveSearchMode}
+                                    toggleSearchMode={this.toggleSearchMode}
+                                    filtersInQuery={this.state.filtersInQuery}
+                                    onFiltersInQueryChange={this.onFiltersInQueryChange}
+                                    setPatternType={this.setPatternType}
+                                    setCaseSensitivity={this.setCaseSensitivity}
+                                    smartSearchField={this.state.smartSearchField}
+                                />
+                            )}
+                        />
+                        {/* eslint-enable react/jsx-no-bind */}
+                    </BrowserRouter>
+                    <Tooltip key={1} />
+                    <Notifications
+                        key={2}
+                        extensionsController={this.extensionsController}
+                        notificationClassNames={notificationClassNames}
+                    />
                 </ShortcutProvider>
             </ErrorBoundary>
         )
     }
 
-    private onThemePreferenceChange = (themePreference: ThemePreference) => {
+    private onThemePreferenceChange = (themePreference: ThemePreference): void => {
         this.setState({ themePreference })
     }
 
-    private onNavbarQueryChange = (navbarSearchQuery: string) => {
-        this.setState({ navbarSearchQuery })
+    private onNavbarQueryChange = (navbarSearchQueryState: QueryState): void => {
+        this.setState({ navbarSearchQueryState })
+    }
+
+    private onFiltersInQueryChange = (filtersInQuery: FiltersToTypeAndValue): void => {
+        this.setState({ filtersInQuery })
+    }
+
+    private setPatternType = (patternType: GQL.SearchPatternType): void => {
+        this.setState({
+            searchPatternType: patternType,
+        })
+    }
+
+    private setCaseSensitivity = (caseSensitive: boolean): void => {
+        this.setState({
+            searchCaseSensitivity: caseSensitive,
+        })
     }
 }
+
+export const SourcegraphWebApp = hot(ColdSourcegraphWebApp)

@@ -1,5 +1,4 @@
-import { ProxyResult } from '@sourcegraph/comlink'
-import { isEqual } from 'lodash'
+import { Remote } from '@sourcegraph/comlink'
 import { from, Subscription } from 'rxjs'
 import { bufferCount, startWith } from 'rxjs/operators'
 import { ExtExtensionsAPI } from '../../extension/api/extensions'
@@ -16,13 +15,10 @@ export class ClientExtensions {
      * @param extensions An observable that emits the set of extensions that should be activated
      * upon subscription and whenever it changes.
      */
-    constructor(private proxy: ProxyResult<ExtExtensionsAPI>, extensionRegistry: ExtensionsService) {
+    constructor(private proxy: Remote<ExtExtensionsAPI>, extensionRegistry: ExtensionsService) {
         this.subscriptions.add(
             from(extensionRegistry.activeExtensions)
-                .pipe(
-                    startWith([] as ExecutableExtension[]),
-                    bufferCount(2, 1)
-                )
+                .pipe(startWith([] as ExecutableExtension[]), bufferCount(2, 1))
                 .subscribe(([oldExtensions, newExtensions]) => {
                     // Diff next state's activated extensions vs. current state's.
                     const toActivate = [...newExtensions] // clone to avoid mutating state stored by bufferCount
@@ -30,7 +26,7 @@ export class ClientExtensions {
                     const next: ExecutableExtension[] = []
                     if (oldExtensions) {
                         for (const x of oldExtensions) {
-                            const newIndex = toActivate.findIndex(({ id }) => isEqual(x.id, id))
+                            const newIndex = toActivate.findIndex(({ id }) => x.id === id)
                             if (newIndex === -1) {
                                 // Extension is no longer activated
                                 toDeactivate.push(x)

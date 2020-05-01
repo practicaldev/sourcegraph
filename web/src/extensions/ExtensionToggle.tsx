@@ -13,6 +13,8 @@ import { isExtensionAdded } from './extension/extension'
 interface Props extends SettingsCascadeProps, PlatformContextProps<'updateSettings'> {
     /** The extension that this element is for. */
     extension: Pick<ConfiguredRegistryExtension, 'id'>
+
+    className?: string
 }
 
 /**
@@ -89,11 +91,12 @@ export class ExtensionToggle extends React.PureComponent<Props> {
                 value={isExtensionEnabled(this.props.settingsCascade.final, this.props.extension.id)}
                 onToggle={this.onToggle}
                 title={title}
+                className={this.props.className}
             />
         )
     }
 
-    private onToggle = (enabled: boolean) => {
+    private onToggle = (enabled: boolean): void => {
         this.toggles.next(enabled)
     }
 }
@@ -111,11 +114,12 @@ function confirmAddExtension(extensionID: string): boolean {
 function extractErrors(c: SettingsCascadeOrError): SettingsCascade | ErrorLike {
     if (c.subjects === null) {
         return new Error('Subjects was ' + c.subjects)
-    } else if (c.final === null || isErrorLike(c.final)) {
-        return new Error('Merged was ' + c.final)
-    } else if (c.subjects.find(isErrorLike)) {
-        return new Error('One of the subjects was ' + c.subjects.find(isErrorLike))
-    } else {
-        return c as SettingsCascade
     }
+    if (c.final === null || isErrorLike(c.final)) {
+        return new Error('Merged was ' + c.final)
+    }
+    if (c.subjects.find(isErrorLike)) {
+        return new Error('One of the subjects was ' + c.subjects.find(isErrorLike))
+    }
+    return c as SettingsCascade
 }

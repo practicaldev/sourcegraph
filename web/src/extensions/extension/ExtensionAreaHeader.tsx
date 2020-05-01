@@ -3,7 +3,7 @@ import * as React from 'react'
 import { Link, NavLink, RouteComponentProps } from 'react-router-dom'
 import { Path } from '../../../../shared/src/components/Path'
 import { isExtensionEnabled } from '../../../../shared/src/extensions/extension'
-import { ExtensionManifest } from '../../../../shared/src/schema/extension.schema'
+import { ExtensionManifest } from '../../../../shared/src/schema/extensionSchema'
 import { isErrorLike } from '../../../../shared/src/util/errors'
 import { NavItemWithIconDescriptor } from '../../util/contributions'
 import { ExtensionToggle } from '../ExtensionToggle'
@@ -11,9 +11,11 @@ import { isExtensionAdded } from './extension'
 import { ExtensionAreaRouteContext } from './ExtensionArea'
 import { ExtensionConfigurationState } from './ExtensionConfigurationState'
 import { WorkInProgressBadge } from './WorkInProgressBadge'
+import { isEncodedImage } from '../../../../shared/src/util/icon'
 
 interface ExtensionAreaHeaderProps extends ExtensionAreaRouteContext, RouteComponentProps<{}> {
-    navItems: ReadonlyArray<ExtensionAreaHeaderNavItem>
+    navItems: readonly ExtensionAreaHeaderNavItem[]
+    className: string
 }
 
 export type ExtensionAreaHeaderContext = Pick<ExtensionAreaHeaderProps, 'extension'>
@@ -30,7 +32,7 @@ export const ExtensionAreaHeader: React.FunctionComponent<ExtensionAreaHeaderPro
         props.extension.manifest && !isErrorLike(props.extension.manifest) ? props.extension.manifest : undefined
     let iconURL: URL | undefined
     try {
-        if (manifest && manifest.icon) {
+        if (manifest?.icon) {
             iconURL = new URL(manifest.icon)
         }
     } catch (e) {
@@ -40,17 +42,16 @@ export const ExtensionAreaHeader: React.FunctionComponent<ExtensionAreaHeaderPro
     const isWorkInProgress = props.extension.registryExtension && props.extension.registryExtension.isWorkInProgress
 
     return (
-        <div className="extension-area-header border-bottom simple-area-header">
+        <div className={`extension-area-header ${props.className || ''}`}>
             <div className="container">
                 {props.extension && (
                     <>
                         <div className="mb-3">
                             <div className="d-flex align-items-start">
-                                {manifest &&
-                                    manifest.icon &&
+                                {manifest?.icon &&
                                     iconURL &&
                                     iconURL.protocol === 'data:' &&
-                                    /^data:image\/png(;base64)?,/.test(manifest.icon) && (
+                                    isEncodedImage(manifest.icon) && (
                                         <img className="extension-area-header__icon mr-2" src={manifest.icon} />
                                     )}
                                 <div>
@@ -85,13 +86,12 @@ export const ExtensionAreaHeader: React.FunctionComponent<ExtensionAreaHeaderPro
                         </div>
                         <div className="d-flex align-items-center mt-3 mb-2">
                             {props.authenticatedUser && (
-                                <div className="mr-2">
-                                    <ExtensionToggle
-                                        extension={props.extension}
-                                        settingsCascade={props.settingsCascade}
-                                        platformContext={props.platformContext}
-                                    />
-                                </div>
+                                <ExtensionToggle
+                                    extension={props.extension}
+                                    settingsCascade={props.settingsCascade}
+                                    platformContext={props.platformContext}
+                                    className="mr-2"
+                                />
                             )}
                             <ExtensionConfigurationState
                                 className="mr-2"
@@ -116,23 +116,24 @@ export const ExtensionAreaHeader: React.FunctionComponent<ExtensionAreaHeaderPro
                                 </div>
                             )}
                         </div>
-                        <div className="area-header__nav mt-3">
-                            <div className="area-header__nav-links">
+                        <div className="mt-3">
+                            <ul className="nav nav-tabs border-bottom-0">
                                 {props.navItems.map(
                                     ({ to, label, exact, icon: Icon, condition = () => true }) =>
                                         condition(props) && (
-                                            <NavLink
-                                                key={label}
-                                                to={props.url + to}
-                                                className="btn area-header__nav-link"
-                                                activeClassName="area-header__nav-link--active"
-                                                exact={exact}
-                                            >
-                                                {Icon && <Icon className="icon-inline" />} {label}
-                                            </NavLink>
+                                            <li key={label} className="nav-item">
+                                                <NavLink
+                                                    to={props.url + to}
+                                                    className="nav-link"
+                                                    activeClassName="active"
+                                                    exact={exact}
+                                                >
+                                                    {Icon && <Icon className="icon-inline" />} {label}
+                                                </NavLink>
+                                            </li>
                                         )
                                 )}
-                            </div>
+                            </ul>
                         </div>
                     </>
                 )}

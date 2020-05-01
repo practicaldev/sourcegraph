@@ -1,26 +1,19 @@
 import * as H from 'history'
 import * as React from 'react'
-import { cleanup, fireEvent, render } from 'react-testing-library'
+import { cleanup, fireEvent, render } from '@testing-library/react'
 import _VisibilitySensor from 'react-visibility-sensor'
 import { MockVisibilitySensor } from './CodeExcerpt.test'
 
-jest.mock(
-    'react-visibility-sensor',
-    (): typeof _VisibilitySensor => ({ children, onChange }) => (
-        <>
-            <MockVisibilitySensor onChange={onChange} children={children} />
-        </>
-    )
-)
+jest.mock('react-visibility-sensor', (): typeof _VisibilitySensor => ({ children, onChange }) => (
+    <>
+        <MockVisibilitySensor onChange={onChange}>{children}</MockVisibilitySensor>
+    </>
+))
 
 import sinon from 'sinon'
-import {
-    HIGHLIGHTED_FILE_LINES_SIMPLE_REQUEST,
-    NOOP_SETTINGS_CASCADE,
-    RESULT,
-} from '../../../web/src/search/testHelpers'
+
 import { FileMatchChildren } from './FileMatchChildren'
-import { setLinkComponent } from './Link'
+import { RESULT, HIGHLIGHTED_FILE_LINES_SIMPLE_REQUEST, NOOP_SETTINGS_CASCADE } from '../util/searchTestHelpers'
 
 const history = H.createBrowserHistory()
 history.replace({ pathname: '/search' })
@@ -46,11 +39,7 @@ const defaultProps = {
 }
 
 describe('FileMatchChildren', () => {
-    setLinkComponent((props: any) => <a {...props} />)
-    afterAll(() => {
-        setLinkComponent(null as any)
-        cleanup()
-    })
+    afterAll(cleanup)
 
     it('calls onSelect callback when an item is clicked', () => {
         const { container } = render(<FileMatchChildren {...defaultProps} onSelect={onSelect} />)
@@ -69,7 +58,7 @@ describe('FileMatchChildren', () => {
                     settings: { 'search.contextLines': '3' },
                     extensions: null,
                     subject: {
-                        __typename: 'User' as 'User',
+                        __typename: 'User' as const,
                         username: 'f',
                         id: 'abc',
                         settingsURL: '/users/f/settings',

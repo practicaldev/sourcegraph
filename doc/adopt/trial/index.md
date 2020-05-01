@@ -2,7 +2,7 @@
 
 Sourcegraph has been deployed inside of thousands of organizations. From our experience working with those that have been successful, and those that haven't, we have collected a set of recommendations for running an effective trial.
 
-> Note: Trying Sourcegraph during a Hackathon? Check out our [Hackathon offerings](https://about.sourcegraph.com/hackathons) and let us know!
+> NOTE: Trying Sourcegraph during a Hackathon? Check out our [Hackathon offerings](https://about.sourcegraph.com/hackathons) and let us know!
 
 ## 1. Define trial success
 
@@ -50,7 +50,7 @@ As mentioned above, Sourcegraph trials are most successful when they start with 
   (1) investing in the product and exploring features, as they don't expect it to stick around, and;
   (2) sharing links, telling others about it, posting search results, and other socializing.
 
-If you want to run a trial with more than 100 users on your instance, just [reach out](https://about.sourcegraph.com/contact) and we'll provide an unlimited license key for up to a month, no questions asked.
+If you want to run a trial with more than the limit of free users on your instance, just [reach out](https://about.sourcegraph.com/contact) and we'll provide an unlimited license key for up to a month, no questions asked.
 
 A typical message to the team looks like:
 
@@ -67,11 +67,11 @@ A typical message to the team looks like:
 
 ## 4. Deploy integrations
 
-Sourcegraph is most useful when it's at your fingertips. Our [integrations](../../integration/index.md), including our [Chrome and Firefox extensions](../../integration/browser_extension/index.md) which provide code intelligence in GitHub, GitLab, Bitbucket, Phabricator, and more, and also provide a search shortcut from the browser URL bar:
+Sourcegraph is most useful when it's at your fingertips. Our [integrations](../../integration/index.md), including our [Chrome and Firefox extensions](../../integration/browser_extension.md) which provide code intelligence in GitHub, GitLab, Bitbucket, Phabricator, and more, and also provide a search shortcut from the browser URL bar:
 
-![Sourcegraph browser extension](../../integration/img/BrowserExtension.gif)
+![Sourcegraph browser extension](https://storage.googleapis.com/sourcegraph-assets/BrowserExtension.gif)
 
-For short trials, however, companies often choose to only set up our search shortcut (or "omnibox") integration (though it provides less functionality, it may require fewer internal approvals). See [our guide for setting up search shortcuts](../../integration/browser_search_engine/index.md).
+For short trials, however, companies often choose to only set up our search shortcut (or "omnibox") integration (though it provides less functionality, it may require fewer internal approvals). See [our guide for setting up search shortcuts](../../integration/browser_search_engine.md).
 
 ## 5. Measure success
 

@@ -10,15 +10,15 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/inconshreveable/log15"
 	"github.com/pkg/errors"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/auth/providers"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/authz"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/extsvc"
-	"github.com/sourcegraph/sourcegraph/pkg/extsvc/gitlab"
-	"github.com/sourcegraph/sourcegraph/pkg/rcache"
-	log15 "gopkg.in/inconshreveable/log15.v2"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/gitlab"
+	"github.com/sourcegraph/sourcegraph/internal/httpcli"
+	"github.com/sourcegraph/sourcegraph/internal/rcache"
 )
 
 type pcache interface {
@@ -37,7 +37,7 @@ type SudoProvider struct {
 
 	clientProvider    *gitlab.ClientProvider
 	clientURL         *url.URL
-	codeHost          *gitlab.CodeHost
+	codeHost          *extsvc.CodeHost
 	gitlabProvider    string
 	authnConfigID     providers.ConfigID
 	useNativeUsername bool
@@ -45,7 +45,7 @@ type SudoProvider struct {
 	cacheTTL          time.Duration
 }
 
-var _ authz.Provider = ((*SudoProvider)(nil))
+var _ authz.Provider = (*SudoProvider)(nil)
 
 type SudoProviderOp struct {
 	// BaseURL is the URL of the GitLab instance.
@@ -77,13 +77,13 @@ type SudoProviderOp struct {
 	MockCache pcache
 }
 
-func NewSudoProvider(op SudoProviderOp) *SudoProvider {
+func newSudoProvider(op SudoProviderOp, cli httpcli.Doer) *SudoProvider {
 	p := &SudoProvider{
 		sudoToken: op.SudoToken,
 
-		clientProvider:    gitlab.NewClientProvider(op.BaseURL, nil),
+		clientProvider:    gitlab.NewClientProvider(op.BaseURL, cli),
 		clientURL:         op.BaseURL,
-		codeHost:          gitlab.NewCodeHost(op.BaseURL),
+		codeHost:          extsvc.NewCodeHost(op.BaseURL, gitlab.ServiceType),
 		cache:             op.MockCache,
 		authnConfigID:     op.AuthnConfigID,
 		gitlabProvider:    op.GitLabProvider,
@@ -110,98 +110,68 @@ func (p *SudoProvider) Validate() (problems []string) {
 }
 
 func (p *SudoProvider) ServiceID() string {
-	return p.codeHost.ServiceID()
+	return p.codeHost.ServiceID
 }
 
 func (p *SudoProvider) ServiceType() string {
-	return p.codeHost.ServiceType()
+	return p.codeHost.ServiceType
 }
 
-func (p *SudoProvider) Repos(ctx context.Context, repos map[authz.Repo]struct{}) (mine map[authz.Repo]struct{}, others map[authz.Repo]struct{}) {
-	// Note(beyang): this is identical to GitLabOAuthAuthzProvider.Repos, so is not explicitly
-	// unit-tested. If this impl ever changes, unit tests should be added.
-	return authz.GetCodeHostRepos(p.codeHost, repos)
-}
-
-func (p *SudoProvider) RepoPerms(ctx context.Context, account *extsvc.ExternalAccount, repos map[authz.Repo]struct{}) (map[api.RepoName]map[authz.Perm]bool, error) {
+func (p *SudoProvider) RepoPerms(ctx context.Context, account *extsvc.Account, repos []*types.Repo) ([]authz.RepoPerms, error) {
 	accountID := "" // empty means public / unauthenticated to the code host
-	if account != nil && account.ServiceID == p.codeHost.ServiceID() && account.ServiceType == p.codeHost.ServiceType() {
+	if account != nil && account.ServiceID == p.codeHost.ServiceID && account.ServiceType == p.codeHost.ServiceType {
 		accountID = account.AccountID
 	}
 
-	perms := map[api.RepoName]map[authz.Perm]bool{}
+	remaining := repos
+	perms := make([]authz.RepoPerms, 0, len(remaining))
 
-	remaining, _ := p.Repos(ctx, repos)
-	nextRemaining := map[authz.Repo]struct{}{}
-
-	// Populate perms using cached repository visibility information. After this block,
-	// nextRemaining records the repositories that we still have to check.
-	for repo := range remaining {
-		projID, err := strconv.Atoi(repo.ExternalRepoSpec.ID)
+	for _, repo := range remaining {
+		// Populate perms using cached repository visibility information.
+		projID, err := strconv.Atoi(repo.ExternalRepo.ID)
 		if err != nil {
 			return nil, errors.Wrap(err, "GitLab repo external ID did not parse to int")
 		}
-		vis, exists := cacheGetRepoVisibility(p.cache, projID, p.cacheTTL)
-		if !exists {
-			nextRemaining[repo] = struct{}{}
-			continue
-		}
-		if v := vis.Visibility; v == gitlab.Public || (v == gitlab.Internal && accountID != "") {
-			perms[repo.RepoName] = map[authz.Perm]bool{authz.Read: true}
-			continue
-		}
-		nextRemaining[repo] = struct{}{}
-	}
 
-	if len(nextRemaining) == 0 { // shortcut
-		return perms, nil
-	}
-
-	// Populate perms using cached user-can-access-repository information. After this block,
-	// nextRemaining records the repositories that we still have to check.
-	if accountID != "" {
-		remaining, nextRemaining = nextRemaining, map[authz.Repo]struct{}{}
-		for repo := range remaining {
-			projID, err := strconv.Atoi(repo.ExternalRepoSpec.ID)
-			if err != nil {
-				return nil, errors.Wrap(err, "GitLab repo external ID did not parse to int")
-			}
-			userRepo, exists := cacheGetUserRepo(p.cache, accountID, projID, p.cacheTTL)
-			if !exists {
-				nextRemaining[repo] = struct{}{}
+		if vis, exists := cacheGetRepoVisibility(p.cache, projID, p.cacheTTL); exists {
+			if v := vis.Visibility; v == gitlab.Public || (v == gitlab.Internal && accountID != "") {
+				perms = append(perms, authz.RepoPerms{Repo: repo, Perms: authz.Read})
 				continue
 			}
-			perms[repo.RepoName] = map[authz.Perm]bool{authz.Read: userRepo.Read}
 		}
 
-		if len(nextRemaining) == 0 { // shortcut
-			return perms, nil
+		// Populate perms using cached user-can-access-repository information.
+		if accountID != "" {
+			if userRepo, exists := cacheGetUserRepo(p.cache, accountID, projID, p.cacheTTL); exists {
+				rp := authz.RepoPerms{Repo: repo}
+				if userRepo.Read {
+					rp.Perms = authz.Read
+				}
+				perms = append(perms, rp)
+				continue
+			}
 		}
-	}
 
-	// Populate perms for the remaining repos (nextRemaining) by fetching directly from the GitLab
-	// API (and update the user repo-visibility and user-can-access-repo permissions, as well)
-	var sudo string
-	if account != nil {
-		usr, _, err := gitlab.GetExternalAccountData(&account.ExternalAccountData)
-		if err != nil {
-			return nil, err
+		// Populate perms by fetching directly from the GitLab
+		// API (and update the user repo-visibility and user-can-access-repo permissions, as well)
+		var sudo string
+		if account != nil {
+			usr, _, err := gitlab.GetExternalAccountData(&account.AccountData)
+			if err != nil {
+				return nil, err
+			}
+			sudo = strconv.Itoa(int(usr.ID))
 		}
-		sudo = strconv.Itoa(int(usr.ID))
-	}
-	for repo := range remaining {
-		projID, err := strconv.Atoi(repo.ExternalRepoSpec.ID)
-		if err != nil {
-			return nil, errors.Wrap(err, "GitLab repo external ID did not parse to int")
-		}
+
 		isAccessible, vis, isContentAccessible, err := p.fetchProjVis(ctx, sudo, projID)
 		if err != nil {
-			log15.Error("Failed to fetch visibility for GitLab project", "projectID", projID, "gitlabHost", p.codeHost.BaseURL().String(), "error", err)
+			log15.Error("Failed to fetch visibility for GitLab project", "projectID", projID, "gitlabHost", p.codeHost.BaseURL.String(), "error", err)
 			continue
 		}
+
 		if isAccessible {
 			// Set perms
-			perms[repo.RepoName] = map[authz.Perm]bool{authz.Read: true}
+			perms = append(perms, authz.RepoPerms{Repo: repo, Perms: authz.Read})
 
 			// Update visibility cache
 			err := cacheSetRepoVisibility(p.cache, projID, repoVisibilityCacheVal{Visibility: vis, TTL: p.cacheTTL})
@@ -228,6 +198,7 @@ func (p *SudoProvider) RepoPerms(ctx context.Context, account *extsvc.ExternalAc
 			}
 		}
 	}
+
 	return perms, nil
 }
 
@@ -282,7 +253,7 @@ func (p *SudoProvider) fetchProjVis(ctx context.Context, sudo string, projID int
 // FetchAccount satisfies the authz.Provider interface. It iterates through the current list of
 // linked external accounts, find the one (if it exists) that matches the authn provider specified
 // in the SudoProvider struct, and fetches the user account from the GitLab API using that identity.
-func (p *SudoProvider) FetchAccount(ctx context.Context, user *types.User, current []*extsvc.ExternalAccount) (mine *extsvc.ExternalAccount, err error) {
+func (p *SudoProvider) FetchAccount(ctx context.Context, user *types.User, current []*extsvc.Account) (mine *extsvc.Account, err error) {
 	if user == nil {
 		return nil, nil
 	}
@@ -296,7 +267,7 @@ func (p *SudoProvider) FetchAccount(ctx context.Context, user *types.User, curre
 		if authnProvider == nil {
 			return nil, nil
 		}
-		var authnAcct *extsvc.ExternalAccount
+		var authnAcct *extsvc.Account
 		for _, acct := range current {
 			if acct.ServiceID == authnProvider.CachedInfo().ServiceID && acct.ServiceType == authnProvider.ConfigID().Type {
 				authnAcct = acct
@@ -315,17 +286,17 @@ func (p *SudoProvider) FetchAccount(ctx context.Context, user *types.User, curre
 		return nil, nil
 	}
 
-	var accountData extsvc.ExternalAccountData
+	var accountData extsvc.AccountData
 	gitlab.SetExternalAccountData(&accountData, glUser, nil)
 
-	glExternalAccount := extsvc.ExternalAccount{
+	glExternalAccount := extsvc.Account{
 		UserID: user.ID,
-		ExternalAccountSpec: extsvc.ExternalAccountSpec{
-			ServiceType: p.codeHost.ServiceType(),
-			ServiceID:   p.codeHost.ServiceID(),
+		AccountSpec: extsvc.AccountSpec{
+			ServiceType: p.codeHost.ServiceType,
+			ServiceID:   p.codeHost.ServiceID,
 			AccountID:   strconv.Itoa(int(glUser.ID)),
 		},
-		ExternalAccountData: accountData,
+		AccountData: accountData,
 	}
 	return &glExternalAccount, nil
 }

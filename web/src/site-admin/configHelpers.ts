@@ -1,6 +1,5 @@
 import { FormattingOptions } from '@sqs/jsonc-parser'
 import { setProperty } from '@sqs/jsonc-parser/lib/edit'
-import { SlackNotificationsConfig } from '../schema/settings.schema'
 import { ConfigInsertionFunction } from '../settings/MonacoSettingsEditor'
 
 const defaultFormattingOptions: FormattingOptions = {
@@ -23,12 +22,13 @@ const addSearchScopeToSettings: ConfigInsertionFunction = config => {
     return { edits, selectText: '<name>' }
 }
 
-const addSlackWebhook: ConfigInsertionFunction = config => {
-    const value: SlackNotificationsConfig = {
-        webhookURL: 'get webhook URL at https://YOUR-WORKSPACE-NAME.slack.com/apps/new/A0F7XDUAZ-incoming-webhooks',
+const addQuickLinkToSettings: ConfigInsertionFunction = config => {
+    const value: { name: string; url: string } = {
+        name: '<human-readable name>',
+        url: '<URL>',
     }
-    const edits = setProperty(config, ['notifications.slack'], value, defaultFormattingOptions)
-    return { edits, selectText: '""', cursorOffset: 1 }
+    const edits = setProperty(config, ['quicklinks', -1], value, defaultFormattingOptions)
+    return { edits, selectText: '<name>' }
 }
 
 export interface EditorAction {
@@ -44,7 +44,5 @@ export const settingsActions: EditorAction[] = [
         run: setSearchContextLines,
     },
     { id: 'sourcegraph.settings.searchScopes', label: 'Add search scope', run: addSearchScopeToSettings },
-    { id: 'sourcegraph.settings.addSlackWebhook', label: 'Add Slack webhook', run: addSlackWebhook },
+    { id: 'sourcegraph.settings.quickLinks', label: 'Add quick link', run: addQuickLinkToSettings },
 ]
-
-export const siteConfigActions: EditorAction[] = []

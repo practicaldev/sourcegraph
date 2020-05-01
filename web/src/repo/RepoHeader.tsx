@@ -1,8 +1,10 @@
 import * as H from 'history'
 import ChevronRightIcon from 'mdi-react/ChevronRightIcon'
+import MenuDownIcon from 'mdi-react/MenuDownIcon'
 import SettingsIcon from 'mdi-react/SettingsIcon'
 import * as React from 'react'
-import { ActionsNavItems } from '../../../shared/src/actions/ActionsNavItems'
+import { Link } from 'react-router-dom'
+import { UncontrolledPopover } from 'reactstrap'
 import { ContributableMenu } from '../../../shared/src/api/protocol'
 import { LinkOrButton } from '../../../shared/src/components/LinkOrButton'
 import { displayRepoName, splitPath } from '../../../shared/src/components/RepoFileLink'
@@ -10,11 +12,11 @@ import { ExtensionsControllerProps } from '../../../shared/src/extensions/contro
 import * as GQL from '../../../shared/src/graphql/schema'
 import { PlatformContextProps } from '../../../shared/src/platform/context'
 import { ErrorLike, isErrorLike } from '../../../shared/src/util/errors'
-import { PopoverButton } from '../components/PopoverButton'
+import { WebActionsNavItems } from '../components/shared'
+import { EventLoggerProps } from '../tracking/eventLogger'
 import { ActionButtonDescriptor } from '../util/contributions'
 import { ResolvedRev } from './backend'
 import { RepositoriesPopover } from './RepositoriesPopover'
-
 /**
  * Stores the list of RepoHeaderContributions, manages addition/deletion, and ensures they are sorted.
  *
@@ -29,7 +31,7 @@ class RepoHeaderContributionStore {
 
     private onRepoHeaderContributionAdd(item: RepoHeaderContribution): void {
         if (!item.element) {
-            throw new Error(`RepoHeaderContribution has no element`)
+            throw new Error('RepoHeaderContribution has no element')
         }
         if (typeof item.element.key !== 'string') {
             throw new Error(`RepoHeaderContribution (${item.element.type.toString()}) element must have a string key`)
@@ -80,7 +82,7 @@ export interface RepoHeaderContribution {
      * The element to display in the RepoHeader. The element *must* have a React key that is a string and is unique
      * among all RepoHeaderContributions. If not, an exception will be thrown.
      */
-    element: React.ReactElement<any>
+    element: React.ReactElement
 }
 
 /** React props for components that store or display RepoHeaderContributions. */
@@ -120,12 +122,12 @@ export interface RepoHeaderContext {
 
 export interface RepoHeaderActionButton extends ActionButtonDescriptor<RepoHeaderContext> {}
 
-interface Props extends PlatformContextProps, ExtensionsControllerProps {
+interface Props extends PlatformContextProps, ExtensionsControllerProps, EventLoggerProps {
     /**
      * An array of render functions for action buttons that can be configured *in addition* to action buttons
      * contributed through {@link RepoHeaderContributionsLifecycleProps} and through extensions.
      */
-    actionButtons: ReadonlyArray<RepoHeaderActionButton>
+    actionButtons: readonly RepoHeaderActionButton[]
 
     /**
      * The repository that this header is for.
@@ -139,7 +141,6 @@ interface Props extends PlatformContextProps, ExtensionsControllerProps {
 
               name: string
               url: string
-              enabled: boolean
               viewerCanAdminister: boolean
           }
 
@@ -171,7 +172,7 @@ export class RepoHeader extends React.PureComponent<Props, State> {
         repoHeaderContributions: [],
     }
 
-    public constructor(props: Props) {
+    constructor(props: Props) {
         super(props)
         props.onLifecyclePropsChange(this.repoHeaderContributionStore.props)
     }
@@ -188,44 +189,33 @@ export class RepoHeader extends React.PureComponent<Props, State> {
         }
         return (
             <nav className="repo-header navbar navbar-expand">
-                <div className="navbar-nav">
-                    <PopoverButton
-                        className="repo-header__section-btn repo-header__repo"
-                        globalKeyBinding="r"
-                        link={
+                <div className="d-flex align-items-center">
+                    <Link
+                        to={
                             this.props.resolvedRev && !isErrorLike(this.props.resolvedRev)
                                 ? this.props.resolvedRev.rootTreeURL
                                 : this.props.repo.url
                         }
-                        popoverElement={
-                            <RepositoriesPopover
-                                currentRepo={this.props.repo.id}
-                                history={this.props.history}
-                                location={this.props.location}
-                            />
-                        }
-                        hideOnChange={this.props.repo.name}
+                        className="repo-header__repo"
                     >
                         {repoDir ? `${repoDir}/` : ''}
                         <span className="repo-header__repo-basename">{repoBase}</span>
-                    </PopoverButton>
-                    {!this.props.repo.enabled && (
-                        <div
-                            className="alert alert-danger repo-header__alert"
-                            data-tooltip={
-                                this.props.repo.viewerCanAdminister
-                                    ? 'Only site admins can access disabled repositories. Go to Settings to enable it.'
-                                    : 'Ask the site admin to enable this repository to view and search it.'
-                            }
-                        >
-                            Repository disabled
-                        </div>
-                    )}
+                    </Link>
+                    <button type="button" id="repo-popover" className="btn btn-link px-0">
+                        <MenuDownIcon className="icon-inline" />
+                    </button>
+                    <UncontrolledPopover placement="bottom-start" target="repo-popover" trigger="legacy">
+                        <RepositoriesPopover
+                            currentRepo={this.props.repo.id}
+                            history={this.props.history}
+                            location={this.props.location}
+                        />
+                    </UncontrolledPopover>
                 </div>
                 {navActions.map((a, i) => (
                     <div className="navbar-nav" key={a.element.key || i}>
                         <ChevronRightIcon className="icon-inline repo-header__icon-chevron" />
-                        <div className="repo-header__rev">{a.element}</div>
+                        {a.element}
                     </div>
                 ))}
                 <ul className="navbar-nav">
@@ -236,20 +226,19 @@ export class RepoHeader extends React.PureComponent<Props, State> {
                     ))}
                 </ul>
                 <div className="repo-header__spacer" />
-                <ul className="navbar-nav navbar-nav__action-items">
-                    <ActionsNavItems
+                <ul className="navbar-nav">
+                    <WebActionsNavItems
+                        {...this.props}
+                        listItemClass="repo-header__action-list-item"
+                        actionItemPressedClass="repo-header__action-item--pressed"
                         menu={ContributableMenu.EditorTitle}
-                        actionItemClass="nav-link"
-                        extensionsController={this.props.extensionsController}
-                        platformContext={this.props.platformContext}
-                        location={this.props.location}
                     />
                 </ul>
                 <ul className="navbar-nav">
                     {this.props.actionButtons.map(
                         ({ condition = () => true, label, tooltip, icon: Icon, to }) =>
                             condition(context) && (
-                                <li className="nav-item" key={label}>
+                                <li className="nav-item repo-header__action-list-item" key={label}>
                                     <LinkOrButton to={to(context)} data-tooltip={tooltip}>
                                         {Icon && <Icon className="icon-inline" />}{' '}
                                         <span className="d-none d-lg-inline">{label}</span>
@@ -258,12 +247,12 @@ export class RepoHeader extends React.PureComponent<Props, State> {
                             )
                     )}
                     {rightActions.map((a, i) => (
-                        <li className="nav-item" key={a.element.key || i}>
+                        <li className="nav-item repo-header__action-list-item" key={a.element.key || i}>
                             {a.element}
                         </li>
                     ))}
                     {this.props.repo.viewerCanAdminister && (
-                        <li className="nav-item">
+                        <li className="nav-item repo-header__action-list-item">
                             <LinkOrButton to={`/${this.props.repo.name}/-/settings`} data-tooltip="Repository settings">
                                 <SettingsIcon className="icon-inline" />{' '}
                                 <span className="d-none d-lg-inline">Settings</span>

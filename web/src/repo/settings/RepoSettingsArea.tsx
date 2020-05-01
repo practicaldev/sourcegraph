@@ -1,22 +1,22 @@
-import { upperFirst } from 'lodash'
 import AlertCircleIcon from 'mdi-react/AlertCircleIcon'
 import DoNotDisturbIcon from 'mdi-react/DoNotDisturbIcon'
 import MapSearchIcon from 'mdi-react/MapSearchIcon'
 import * as React from 'react'
 import { Route, RouteComponentProps, Switch } from 'react-router'
 import { Subject, Subscription } from 'rxjs'
-import { switchMap } from 'rxjs/operators'
+import { switchMap, map, distinctUntilChanged } from 'rxjs/operators'
 import * as GQL from '../../../../shared/src/graphql/schema'
 import { HeroPage } from '../../components/HeroPage'
 import { RepoHeaderContributionsLifecycleProps } from '../RepoHeader'
 import { RepoHeaderContributionPortal } from '../RepoHeaderContributionPortal'
 import { fetchRepository } from './backend'
-import { RepoSettingsIndexPage } from './RepoSettingsIndexPage'
-import { RepoSettingsMirrorPage } from './RepoSettingsMirrorPage'
-import { RepoSettingsOptionsPage } from './RepoSettingsOptionsPage'
-import { RepoSettingsSidebar } from './RepoSettingsSidebar'
+import { RepoSettingsSidebar, RepoSettingsSideBarItems } from './RepoSettingsSidebar'
+import { RouteDescriptor } from '../../util/contributions'
+import { ErrorMessage } from '../../components/alerts'
+import { asError } from '../../../../shared/src/util/errors'
+import * as H from 'history'
 
-const NotFoundPage = () => (
+const NotFoundPage: React.FunctionComponent = () => (
     <HeroPage
         icon={MapSearchIcon}
         title="404: Not Found"
@@ -24,10 +24,20 @@ const NotFoundPage = () => (
     />
 )
 
-interface Props extends RouteComponentProps<any>, RepoHeaderContributionsLifecycleProps {
+export interface RepoSettingsAreaRouteContext {
+    repo: GQL.IRepository
+    onDidUpdateRepository: (update: Partial<GQL.IRepository>) => void
+}
+
+export interface RepoSettingsAreaRoute extends RouteDescriptor<RepoSettingsAreaRouteContext> {}
+
+interface Props extends RouteComponentProps<{}>, RepoHeaderContributionsLifecycleProps {
+    repoSettingsAreaRoutes: readonly RepoSettingsAreaRoute[]
+    repoSettingsSidebarItems: RepoSettingsSideBarItems
     repo: GQL.IRepository
     authenticatedUser: GQL.IUser | null
     onDidUpdateRepository: (update: Partial<GQL.IRepository>) => void
+    history: H.History
 }
 
 interface State {
@@ -42,22 +52,27 @@ interface State {
 export class RepoSettingsArea extends React.Component<Props> {
     public state: State = {}
 
-    private repoChanges = new Subject<GQL.IRepository>()
+    private componentUpdates = new Subject<Props>()
     private subscriptions = new Subscription()
 
     public componentDidMount(): void {
         this.subscriptions.add(
-            this.repoChanges
-                .pipe(switchMap(({ name }) => fetchRepository(name)))
-                .subscribe(repo => this.setState({ repo }), err => this.setState({ error: err.message }))
+            this.componentUpdates
+                .pipe(
+                    map(props => props.repo.name),
+                    distinctUntilChanged(),
+                    switchMap(name => fetchRepository(name))
+                )
+                .subscribe(
+                    repo => this.setState({ repo }),
+                    err => this.setState({ error: asError(err).message })
+                )
         )
-        this.repoChanges.next(this.props.repo)
+        this.componentUpdates.next(this.props)
     }
 
-    public componentWillReceiveProps(props: Props): void {
-        if (props.repo !== this.props.repo) {
-            this.repoChanges.next(props.repo)
-        }
+    public componentDidUpdate(): void {
+        this.componentUpdates.next(this.props)
     }
 
     public componentWillUnmount(): void {
@@ -66,7 +81,13 @@ export class RepoSettingsArea extends React.Component<Props> {
 
     public render(): JSX.Element | null {
         if (this.state.error) {
-            return <HeroPage icon={AlertCircleIcon} title="Error" subtitle={upperFirst(this.state.error)} />
+            return (
+                <HeroPage
+                    icon={AlertCircleIcon}
+                    title="Error"
+                    subtitle={<ErrorMessage error={this.state.error} history={this.props.history} />}
+                />
+            )
         }
 
         if (this.state.repo === undefined) {
@@ -88,12 +109,13 @@ export class RepoSettingsArea extends React.Component<Props> {
             return null
         }
 
-        const transferProps = {
+        const context: RepoSettingsAreaRouteContext = {
             repo: this.state.repo,
+            onDidUpdateRepository: this.props.onDidUpdateRepository,
         }
 
         return (
-            <div className="repo-settings-area area">
+            <div className="repo-settings-area container d-flex mt-3">
                 <RepoHeaderContributionPortal
                     position="nav"
                     element={
@@ -103,44 +125,23 @@ export class RepoSettingsArea extends React.Component<Props> {
                     }
                     repoHeaderContributionsLifecycleProps={this.props.repoHeaderContributionsLifecycleProps}
                 />
-                <RepoSettingsSidebar className="area__sidebar" {...this.props} {...transferProps} />
-                <div className="area__content">
+                <RepoSettingsSidebar className="flex-0 mr-3" {...this.props} {...context} />
+                <div className="flex-1">
                     <Switch>
-                        <Route
-                            path={`${this.props.match.url}`}
-                            key="hardcoded-key" // see https://github.com/ReactTraining/react-router/issues/4578#issuecomment-334489490
-                            exact={true}
-                            // tslint:disable-next-line:jsx-no-lambda
-                            render={routeComponentProps => (
-                                <RepoSettingsOptionsPage
-                                    {...routeComponentProps}
-                                    {...transferProps}
-                                    onDidUpdateRepository={this.props.onDidUpdateRepository}
-                                />
-                            )}
-                        />
-                        <Route
-                            path={`${this.props.match.url}/index`}
-                            key="hardcoded-key" // see https://github.com/ReactTraining/react-router/issues/4578#issuecomment-334489490
-                            exact={true}
-                            // tslint:disable-next-line:jsx-no-lambda
-                            render={routeComponentProps => (
-                                <RepoSettingsIndexPage {...routeComponentProps} {...transferProps} />
-                            )}
-                        />
-                        <Route
-                            path={`${this.props.match.url}/mirror`}
-                            key="hardcoded-key" // see https://github.com/ReactTraining/react-router/issues/4578#issuecomment-334489490
-                            exact={true}
-                            // tslint:disable-next-line:jsx-no-lambda
-                            render={routeComponentProps => (
-                                <RepoSettingsMirrorPage
-                                    {...routeComponentProps}
-                                    {...transferProps}
-                                    onDidUpdateRepository={this.props.onDidUpdateRepository}
-                                />
-                            )}
-                        />
+                        {this.props.repoSettingsAreaRoutes.map(
+                            ({ render, path, exact, condition = () => true }) =>
+                                /* eslint-disable react/jsx-no-bind */
+                                condition(context) && (
+                                    <Route
+                                        // see https://github.com/ReactTraining/react-router/issues/4578#issuecomment-334489490
+                                        key="hardcoded-key"
+                                        path={this.props.match.url + path}
+                                        exact={exact}
+                                        render={routeComponentProps => render({ ...context, ...routeComponentProps })}
+                                    />
+                                )
+                        )}
+
                         <Route key="hardcoded-key" component={NotFoundPage} />
                     </Switch>
                 </div>

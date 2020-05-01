@@ -12,23 +12,19 @@ interface Props extends RouteComponentProps<{}>, PlatformContextProps, SettingsC
     site: Pick<GQL.ISite, '__typename' | 'id'>
 }
 
-export class SiteAdminSettingsPage extends React.Component<Props> {
-    public render(): JSX.Element | null {
-        return (
-            <>
-                <PageTitle title="Site settings" />
-                <SettingsArea
-                    {...this.props}
-                    subject={this.props.site}
-                    authenticatedUser={this.props.authenticatedUser}
-                    extraHeader={
-                        <p>
-                            Global settings apply to all organizations and users. Settings for a user or organization
-                            override global settings.
-                        </p>
-                    }
-                />
-            </>
-        )
-    }
-}
+export const SiteAdminSettingsPage: React.FunctionComponent<Props> = props => (
+    <>
+        <PageTitle title="Global settings" />
+        <SettingsArea
+            {...props}
+            subject={props.site}
+            authenticatedUser={props.authenticatedUser}
+            extraHeader={
+                <p>
+                    Global settings apply to all organizations and users. Settings for a user or organization override
+                    global settings.
+                </p>
+            }
+        />
+    </>
+)

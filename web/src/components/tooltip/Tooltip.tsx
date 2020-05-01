@@ -1,4 +1,5 @@
 import * as React from 'react'
+import * as Popper from 'popper.js'
 import { Tooltip as BootstrapTooltip } from 'reactstrap'
 
 interface Props {}
@@ -8,6 +9,7 @@ interface State {
     subjectSeq: number
     lastEventTarget?: HTMLElement
     content?: string
+    placement?: string
 }
 
 /**
@@ -31,8 +33,7 @@ export class Tooltip extends React.PureComponent<Props, State> {
         const instance = Tooltip.INSTANCE
         if (instance) {
             instance.setState(prevState => {
-                const subject =
-                    prevState.lastEventTarget && instance.getSubject(prevState.lastEventTarget as HTMLElement)
+                const subject = prevState.lastEventTarget && instance.getSubject(prevState.lastEventTarget)
                 return {
                     subject,
                     content: subject ? instance.getContent(subject) : undefined,
@@ -65,10 +66,16 @@ export class Tooltip extends React.PureComponent<Props, State> {
                 // Set key prop to work around a bug where quickly mousing between 2 elements with tooltips
                 // displays the 2nd element's tooltip as still pointing to the first.
                 key={this.state.subjectSeq}
-                className="tooltip"
                 isOpen={true}
                 target={this.state.subject}
-                placement="auto"
+                placement={(this.state.placement ?? 'auto') as Popper.Placement}
+                // This is a workaround to an issue with tooltips in reactstrap that causes the entire page to freeze.
+                // Remove when https://github.com/reactstrap/reactstrap/issues/1482 is fixed.
+                modifiers={{
+                    flip: {
+                        enabled: false,
+                    },
+                }}
             >
                 {this.state.content}
             </BootstrapTooltip>
@@ -85,17 +92,17 @@ export class Tooltip extends React.PureComponent<Props, State> {
             (event as MouseEvent).pageX === 0 &&
             (event as MouseEvent).pageY === 0
         ) {
-            this.setState({ lastEventTarget: undefined, subject: undefined, content: undefined })
+            this.setState({ subject: undefined, content: undefined })
             return
         }
 
         const eventTarget = event.target as HTMLElement
         const subject = this.getSubject(eventTarget)
         this.setState(prevState => ({
-            lastEventTarget: eventTarget,
             subject,
             subjectSeq: prevState.subject === subject ? prevState.subjectSeq : prevState.subjectSeq + 1,
             content: subject ? this.getContent(subject) : undefined,
+            placement: subject ? this.getPlacement(subject) : undefined,
         }))
     }
 
@@ -124,5 +131,28 @@ export class Tooltip extends React.PureComponent<Props, State> {
             return undefined
         }
         return subject.getAttribute(Tooltip.SUBJECT_ATTRIBUTE) || undefined
+    }
+
+    private getPlacement = (subject: HTMLElement): string | undefined => {
+        if (!document.body.contains(subject)) {
+            return undefined
+        }
+        return subject.getAttribute('data-placement') || undefined
+    }
+}
+
+/**
+ * Sets or removes a plain-text tooltip on the HTML element using the native style for Sourcegraph
+ * web app.
+ *
+ * @param element The HTML element whose tooltip to set or remove.
+ * @param tooltip The tooltip plain-text content (to add the tooltip) or `null` (to remove the
+ * tooltip).
+ */
+export function setElementTooltip(element: HTMLElement, tooltip: string | null): void {
+    if (tooltip) {
+        element.setAttribute('data-tooltip', tooltip)
+    } else {
+        element.removeAttribute('data-tooltip')
     }
 }

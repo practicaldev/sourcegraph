@@ -93,7 +93,7 @@ func maybePostgresProcFile() (string, error) {
 	SetDefaultEnv("PGDATABASE", "sourcegraph")
 	SetDefaultEnv("PGSSLMODE", "disable")
 
-	return "postgres: su-exec postgres sh -c 'postgres -c listen_addresses=127.0.0.1 -D " + path + "' 2>&1 | grep -v 'database system was shut down' | grep -v 'MultiXact member wraparound' | grep -v 'database system is ready' | grep -v 'autovacuum launcher started' | grep -v 'the database system is starting up'", nil
+	return "postgres: su-exec postgres sh -c 'postgres -c listen_addresses=127.0.0.1 -D " + path + "' 2>&1 | grep -v 'database system was shut down' | grep -v 'MultiXact member wraparound' | grep -v 'database system is ready' | grep -v 'autovacuum launcher started' | grep -v 'the database system is starting up' | grep -v 'listening on IPv4 address'", nil
 }
 
 // maybeUpgradePostgres upgrades the Postgres data files in path to the given version
@@ -137,8 +137,8 @@ func maybeUpgradePostgres(path, newVersion string) (err error) {
 	hostDataDir, err := hostMountPoint(ctx, cli, id, dataDir)
 	switch {
 	case docker.IsErrConnectionFailed(err):
-		fmt.Fprintf(os.Stderr, "\n    Docker socket must be mounted for the automatic upgrade of the internal database to proceed.\n")
-		fmt.Fprintf(os.Stderr, " 👉 docker run ... -v /var/run/docker.sock:/var/run/docker.sock:ro ...\n\n")
+		fmt.Fprint(os.Stderr, "\n    Docker socket must be mounted for the automatic upgrade of the internal database to proceed.\n")
+		fmt.Fprint(os.Stderr, " 👉 docker run ... -v /var/run/docker.sock:/var/run/docker.sock:ro ...\n\n")
 		return errors.New("Docker socket volume mount is missing")
 	case err != nil:
 		return errors.Wrap(err, "failed to determine host mount point")
@@ -374,4 +374,23 @@ func readStatus(path string) (status, version string, err error) {
 
 func l(format string, args ...interface{}) {
 	_, _ = fmt.Fprintf(os.Stderr, "✱ "+format+"\n", args...)
+}
+
+var logLevelConverter = map[string]string{
+	"dbug":  "debug",
+	"info":  "info",
+	"warn":  "warn",
+	"error": "error",
+	"crit":  "fatal",
+}
+
+// convertLogLevel converts a sourcegraph log level (dbug, info, warn, error, crit) into
+// values postgres exporter accepts (debug, info, warn, error, fatal)
+// If value cannot be converted returns "warn" which seems like a good middle-ground.
+func convertLogLevel(level string) string {
+	lvl, ok := logLevelConverter[level]
+	if ok {
+		return lvl
+	}
+	return "warn"
 }

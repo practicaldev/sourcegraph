@@ -11,29 +11,40 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/inconshreveable/log15"
 	"github.com/pkg/errors"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/authz"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/extsvc"
-	"github.com/sourcegraph/sourcegraph/pkg/extsvc/gitlab"
-	"github.com/sourcegraph/sourcegraph/pkg/rcache"
-	log15 "gopkg.in/inconshreveable/log15.v2"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/gitlab"
+	"github.com/sourcegraph/sourcegraph/internal/httpcli"
+	"github.com/sourcegraph/sourcegraph/internal/rcache"
 )
 
-var _ authz.Provider = ((*GitLabOAuthAuthzProvider)(nil))
+var _ authz.Provider = (*OAuthProvider)(nil)
 
-type GitLabOAuthAuthzProvider struct {
-	clientProvider *gitlab.ClientProvider
-	clientURL      *url.URL
-	codeHost       *gitlab.CodeHost
-	cache          cache
-	cacheTTL       time.Duration
+type OAuthProvider struct {
+	// The token is the access token used for syncing repositories from the code host,
+	// but it may or may not be a sudo-scoped.
+	token string
+
+	clientProvider    *gitlab.ClientProvider
+	clientURL         *url.URL
+	codeHost          *extsvc.CodeHost
+	cache             cache
+	cacheTTL          time.Duration
+	minBatchThreshold int
+	maxBatchRequests  int
 }
 
-type GitLabOAuthAuthzProviderOp struct {
+type OAuthProviderOp struct {
 	// BaseURL is the URL of the GitLab instance.
 	BaseURL *url.URL
+
+	// Token is an access token with api scope, it may or may not have sudo scope.
+	//
+	// 🚨 SECURITY: This value contains secret information that must not be shown to non-site-admins.
+	Token string
 
 	// CacheTTL is the TTL of cached permissions lists from the GitLab API.
 	CacheTTL time.Duration
@@ -41,15 +52,30 @@ type GitLabOAuthAuthzProviderOp struct {
 	// MockCache, if non-nil, replaces the default Redis-based cache with the supplied cache mock.
 	// Should only be used in tests.
 	MockCache cache
+
+	// MinBatchThreshold is the number of repositories at which we start trying to batch fetch
+	// GitLab project visibility. This should be in the neighborhood of maxBatchRequests, because
+	// batch-fetching means we fetch *all* projects visible to the given user (not just the ones
+	// requested in RepoPerms)
+	MinBatchThreshold int
+
+	// MaxBatchRequests is the maximum number of batch requests we make for GitLab project
+	// visibility. We limit this in case the user has access to many more projects than are being
+	// requested in RepoPerms.
+	MaxBatchRequests int
 }
 
-func NewOAuthProvider(op GitLabOAuthAuthzProviderOp) *GitLabOAuthAuthzProvider {
-	p := &GitLabOAuthAuthzProvider{
-		clientProvider: gitlab.NewClientProvider(op.BaseURL, nil),
-		clientURL:      op.BaseURL,
-		codeHost:       gitlab.NewCodeHost(op.BaseURL),
-		cache:          op.MockCache,
-		cacheTTL:       op.CacheTTL,
+func newOAuthProvider(op OAuthProviderOp, cli httpcli.Doer) *OAuthProvider {
+	p := &OAuthProvider{
+		token: op.Token,
+
+		clientProvider:    gitlab.NewClientProvider(op.BaseURL, cli),
+		clientURL:         op.BaseURL,
+		codeHost:          extsvc.NewCodeHost(op.BaseURL, gitlab.ServiceType),
+		cache:             op.MockCache,
+		cacheTTL:          op.CacheTTL,
+		minBatchThreshold: op.MinBatchThreshold,
+		maxBatchRequests:  op.MaxBatchRequests,
 	}
 	if p.cache == nil {
 		p.cache = rcache.NewWithTTL(fmt.Sprintf("gitlabAuthz:%s", op.BaseURL.String()), int(math.Ceil(op.CacheTTL.Seconds())))
@@ -57,109 +83,120 @@ func NewOAuthProvider(op GitLabOAuthAuthzProviderOp) *GitLabOAuthAuthzProvider {
 	return p
 }
 
-func (p *GitLabOAuthAuthzProvider) Validate() (problems []string) {
+func (p *OAuthProvider) Validate() (problems []string) {
 	return nil
 }
 
-func (p *GitLabOAuthAuthzProvider) ServiceID() string {
-	return p.codeHost.ServiceID()
+func (p *OAuthProvider) ServiceID() string {
+	return p.codeHost.ServiceID
 }
 
-func (p *GitLabOAuthAuthzProvider) ServiceType() string {
-	return p.codeHost.ServiceType()
+func (p *OAuthProvider) ServiceType() string {
+	return p.codeHost.ServiceType
 }
 
-func (p *GitLabOAuthAuthzProvider) Repos(ctx context.Context, repos map[authz.Repo]struct{}) (mine, others map[authz.Repo]struct{}) {
-	// Note(beyang): this is identical to SudoProvider.Repos, which is not explicitly
-	// unit-tested. If this impl ever changes, unit tests should be added for SudoProvider.Repos.
-	return authz.GetCodeHostRepos(p.codeHost, repos)
-}
-
-func (p *GitLabOAuthAuthzProvider) FetchAccount(ctx context.Context, user *types.User, current []*extsvc.ExternalAccount) (mine *extsvc.ExternalAccount, err error) {
+func (p *OAuthProvider) FetchAccount(ctx context.Context, user *types.User, current []*extsvc.Account) (mine *extsvc.Account, err error) {
 	return nil, nil
 }
 
-func (p *GitLabOAuthAuthzProvider) RepoPerms(ctx context.Context, account *extsvc.ExternalAccount, repos map[authz.Repo]struct{}) (
-	map[api.RepoName]map[authz.Perm]bool, error,
+func (p *OAuthProvider) RepoPerms(ctx context.Context, account *extsvc.Account, repos []*types.Repo) (
+	[]authz.RepoPerms, error,
 ) {
 	accountID := "" // empty means public / unauthenticated to the code host
-	if account != nil && account.ServiceID == p.codeHost.ServiceID() && account.ServiceType == p.codeHost.ServiceType() {
+	if account != nil && account.ServiceID == p.codeHost.ServiceID && account.ServiceType == p.codeHost.ServiceType {
 		accountID = account.AccountID
 	}
 
-	perms := map[api.RepoName]map[authz.Perm]bool{}
-
-	remaining, _ := p.Repos(ctx, repos)
-	nextRemaining := map[authz.Repo]struct{}{}
-
-	// Populate perms using cached repository visibility information. After this block,
-	// nextRemaining records the repositories that we still have to check.
-	for repo := range remaining {
-		projID, err := strconv.Atoi(repo.ExternalRepoSpec.ID)
+	reposByProjID := make(map[int]*types.Repo, len(repos))
+	for _, repo := range repos {
+		projID, err := strconv.Atoi(repo.ExternalRepo.ID)
 		if err != nil {
 			return nil, errors.Wrap(err, "GitLab repo external ID did not parse to int")
 		}
-		vis, exists := cacheGetRepoVisibility(p.cache, projID, p.cacheTTL)
-		if !exists {
-			nextRemaining[repo] = struct{}{}
-			continue
-		}
-		if v := vis.Visibility; v == gitlab.Public || (v == gitlab.Internal && accountID != "") {
-			perms[repo.RepoName] = map[authz.Perm]bool{authz.Read: true}
-			continue
-		}
-		nextRemaining[repo] = struct{}{}
+		reposByProjID[projID] = repo
 	}
 
-	if len(nextRemaining) == 0 { // shortcut
-		return perms, nil
-	}
+	// remaining tracks which repositories permissions remain to be computed for, keyed by project ID
+	remaining := make(map[int]*types.Repo, len(repos))
+	perms := make([]authz.RepoPerms, 0, len(repos))
 
-	// Populate perms using cached user-can-access-repository information. After this block,
-	// nextRemaining records the repositories that we still have to check.
-	if accountID != "" {
-		remaining, nextRemaining = nextRemaining, map[authz.Repo]struct{}{}
-		for repo := range remaining {
-			projID, err := strconv.Atoi(repo.ExternalRepoSpec.ID)
-			if err != nil {
-				return nil, errors.Wrap(err, "GitLab repo external ID did not parse to int")
-			}
-			userRepo, exists := cacheGetUserRepo(p.cache, accountID, projID, p.cacheTTL)
-			if !exists {
-				nextRemaining[repo] = struct{}{}
+	// Populate perms using cached repository visibility information.
+	for projID, repo := range reposByProjID {
+		if vis, exists := cacheGetRepoVisibility(p.cache, projID, p.cacheTTL); exists {
+			if v := vis.Visibility; v == gitlab.Public || (v == gitlab.Internal && accountID != "") {
+				perms = append(perms, authz.RepoPerms{Repo: repo, Perms: authz.Read})
 				continue
 			}
-			perms[repo.RepoName] = map[authz.Perm]bool{authz.Read: userRepo.Read}
 		}
 
-		if len(nextRemaining) == 0 { // shortcut
-			return perms, nil
+		// Populate perms using cached user-can-access-repository information.
+		if accountID != "" {
+			if userRepo, exists := cacheGetUserRepo(p.cache, accountID, projID, p.cacheTTL); exists {
+				rp := authz.RepoPerms{Repo: repo}
+				if userRepo.Read {
+					rp.Perms = authz.Read
+				}
+				perms = append(perms, rp)
+				continue
+			}
 		}
+
+		remaining[projID] = repo
 	}
 
-	// Populate perms for the remaining repos (nextRemaining) by fetching directly from the GitLab
-	// API (and update the user repo-visibility and user-can-access-repo permissions, as well)
 	var oauthToken string
 	if account != nil {
-		_, tok, err := gitlab.GetExternalAccountData(&account.ExternalAccountData)
+		_, tok, err := gitlab.GetExternalAccountData(&account.AccountData)
 		if err != nil {
 			return nil, err
 		}
 		oauthToken = tok.AccessToken
 	}
-	for repo := range remaining {
-		projID, err := strconv.Atoi(repo.ExternalRepoSpec.ID)
+
+	// Best-effort fetch visibility in batch if we have more than X remaining repositories to check
+	// and user is authenticated.
+	//
+	// This is an optimization. If we have too many repositories (GitLab calls them "projects") to
+	// fetch from the GitLab API, we try to batch-fetch all projects whose visibility is `internal`
+	// or `public` (because we can batch-fetch 100 repositories at a time this way). This is not
+	// guaranteed to be strictly better than fetching them individually, because if we batch-fest,
+	// we must batch-fest *all* repositories, not just the ones in `repos`.
+	//
+	// We cannot determine the permissions of projects with visibility `private` this way, because a
+	// project may be visible to a GitLab user, but its contents inaccessible (which means we have
+	// to issue individual API requests to request repository contents to verify permissions).
+	if len(remaining) >= p.minBatchThreshold && oauthToken != "" {
+		nextRemaining := make(map[int]*types.Repo, len(remaining))
+		visibility, err := p.fetchProjVisBatch(ctx, oauthToken, remaining, fetchProjectVisibilityBatchOp{maxRequests: p.maxBatchRequests})
 		if err != nil {
-			return nil, errors.Wrap(err, "GitLab repo external ID did not parse to int")
+			log15.Error("Error encountered fetching project visibility from GitLab", "err", err)
 		}
+		for projID, repo := range remaining {
+			vis, ok := visibility[projID]
+			if !(ok && (vis == visibilityPublic || vis == visibilityInternal)) {
+				nextRemaining[projID] = repo
+				continue
+			}
+
+			// Set perms (visibility is public or internal)
+			perms = append(perms, authz.RepoPerms{Repo: repo, Perms: authz.Read})
+		}
+		remaining = nextRemaining
+	}
+
+	// Fetch individually
+	for projID, repo := range remaining {
+		// Populate perms for the remaining repos (`remaining`) by fetching directly from the GitLab
+		// API (and update the user repo-visibility and user-can-access-repo permissions, as well)
+
 		isAccessible, vis, isContentAccessible, err := p.fetchProjVis(ctx, oauthToken, projID)
 		if err != nil {
-			log15.Error("Failed to fetch visibility for GitLab project", "projectID", projID, "gitlabHost", p.codeHost.BaseURL().String(), "error", err)
+			log15.Error("Failed to fetch visibility for GitLab project", "repoName", repo.Name, "projectID", projID, "gitlabHost", p.codeHost.BaseURL.String(), "error", err)
 			continue
 		}
 		if isAccessible {
 			// Set perms
-			perms[repo.RepoName] = map[authz.Perm]bool{authz.Read: true}
+			perms = append(perms, authz.RepoPerms{Repo: repo, Perms: authz.Read})
 
 			// Update visibility cache
 			err := cacheSetRepoVisibility(p.cache, projID, repoVisibilityCacheVal{Visibility: vis, TTL: p.cacheTTL})
@@ -186,6 +223,7 @@ func (p *GitLabOAuthAuthzProvider) RepoPerms(ctx context.Context, account *extsv
 			}
 		}
 	}
+
 	return perms, nil
 }
 
@@ -195,7 +233,7 @@ func (p *GitLabOAuthAuthzProvider) RepoPerms(ctx context.Context, account *extsv
 // - whether the repository contents are accessible to usr, and
 // - any error encountered in fetching (not including an error due to the repository not being visible);
 //   if the error is non-nil, all other return values should be disregraded
-func (p *GitLabOAuthAuthzProvider) fetchProjVis(ctx context.Context, oauthToken string, projID int) (
+func (p *OAuthProvider) fetchProjVis(ctx context.Context, oauthToken string, projID int) (
 	isAccessible bool, vis gitlab.Visibility, isContentAccessible bool, err error,
 ) {
 	proj, err := p.clientProvider.GetOAuthClient(oauthToken).GetProject(ctx, gitlab.GetProjectOp{
@@ -231,4 +269,75 @@ func (p *GitLabOAuthAuthzProvider) fetchProjVis(ctx context.Context, oauthToken 
 		return false, "", false, err
 	}
 	return true, proj.Visibility, true, nil
+}
+
+type fetchProjectVisibilityBatchOp struct {
+	// maxRequests is the maximum number of requests to issue before returning
+	maxRequests int
+}
+
+type visibilityLevel int
+
+const (
+	visibilityUnknown = iota
+	visibilityPrivate
+	visibilityInternal
+	visibilityPublic
+)
+
+// batchProjVisSize is the number of projects to request visibility for in each batch request issued
+// by fetchProjVisBatch
+const batchProjVisSize = 100
+
+// fetchProjVisBatch returns the list of repositories best-effort sorted into groups. The visiblity
+// results are valid even if err is non-nil.
+func (p *OAuthProvider) fetchProjVisBatch(ctx context.Context, oauthToken string, reposByProjID map[int]*types.Repo, op fetchProjectVisibilityBatchOp) (
+	projIDVisibility map[int]visibilityLevel, err error,
+) {
+	projIDVisibility = make(map[int]visibilityLevel, len(reposByProjID))
+	for projID := range reposByProjID {
+		projIDVisibility[projID] = visibilityUnknown
+	}
+
+	matchCount := 0
+	projPageURL := fmt.Sprintf("projects?per_page=%d", batchProjVisSize)
+	for i := 0; i < op.maxRequests; i++ {
+		if matchCount >= len(reposByProjID) {
+			break
+		}
+		projs, next, err := p.clientProvider.GetOAuthClient(oauthToken).ListProjects(ctx, projPageURL)
+		if err != nil {
+			return projIDVisibility, err
+		}
+
+		for _, proj := range projs {
+			if err := cacheSetRepoVisibility(p.cache, proj.ID, repoVisibilityCacheVal{Visibility: proj.Visibility, TTL: p.cacheTTL}); err != nil {
+				log15.Error("could not set cached repo visibility from batch fetch", "projPath", proj.PathWithNamespace, "err", err)
+			}
+
+			projVis, ok := projIDVisibility[proj.ID]
+			if !ok {
+				continue
+			}
+			if projVis != visibilityUnknown {
+				continue
+			}
+			switch proj.Visibility {
+			case gitlab.Public:
+				projIDVisibility[proj.ID] = visibilityPublic
+			case gitlab.Internal:
+				projIDVisibility[proj.ID] = visibilityInternal
+			case gitlab.Private:
+				projIDVisibility[proj.ID] = visibilityPrivate
+			}
+			matchCount++
+		}
+
+		if next == nil {
+			break
+		}
+		projPageURL = *next
+	}
+
+	return projIDVisibility, nil
 }

@@ -55,7 +55,7 @@ type ProductSubscription interface {
 	Events(context.Context) ([]ProductSubscriptionEvent, error)
 	ActiveLicense(context.Context) (ProductLicense, error)
 	ProductLicenses(context.Context, *graphqlutil.ConnectionArgs) (ProductLicenseConnection, error)
-	CreatedAt() string
+	CreatedAt() DateTime
 	IsArchived() bool
 	URL(context.Context) (string, error)
 	URLForSiteAdmin(context.Context) *string
@@ -67,7 +67,7 @@ type ProductSubscription interface {
 type ProductSubscriptionInvoiceItem interface {
 	Plan() (ProductPlan, error)
 	UserCount() int32
-	ExpiresAt() string
+	ExpiresAt() DateTime
 }
 
 type SetUserBillingArgs struct {
@@ -135,6 +135,7 @@ type ProductSubscriptionArgs struct {
 type ProductSubscriptionsArgs struct {
 	graphqlutil.ConnectionArgs
 	Account *graphql.ID
+	Query   *string
 }
 
 // ProductSubscriptionConnection is the interface for the GraphQL type
@@ -162,7 +163,7 @@ type ProductLicense interface {
 	Subscription(context.Context) (ProductSubscription, error)
 	Info() (*ProductLicenseInfo, error)
 	LicenseKey() string
-	CreatedAt() string
+	CreatedAt() DateTime
 }
 
 // ProductLicenseInput implements the GraphQL type ProductLicenseInput.

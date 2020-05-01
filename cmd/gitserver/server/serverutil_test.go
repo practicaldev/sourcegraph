@@ -2,10 +2,112 @@ package server
 
 import (
 	"io/ioutil"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/go-cmp/cmp"
 )
+
+func TestConfigureRemoteGitCommand(t *testing.T) {
+	expectedEnv := []string{
+		"GIT_ASKPASS=true",
+		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=30",
+	}
+	tests := []struct {
+		input        *exec.Cmd
+		tlsConfig    *tlsConfig
+		expectedEnv  []string
+		expectedArgs []string
+	}{
+		{
+			input:        exec.Command("git", "clone"),
+			expectedEnv:  expectedEnv,
+			expectedArgs: []string{"git", "-c", "credential.helper=", "-c", "protocol.version=2", "clone"},
+		},
+		{
+			input:        exec.Command("git", "fetch"),
+			expectedEnv:  expectedEnv,
+			expectedArgs: []string{"git", "-c", "credential.helper=", "-c", "protocol.version=2", "fetch"},
+		},
+		{
+			input:       exec.Command("git", "ls-remote"),
+			expectedEnv: expectedEnv,
+
+			// Don't use protocol.version=2 for ls-remote because it hurts perf.
+			expectedArgs: []string{"git", "-c", "credential.helper=", "ls-remote"},
+		},
+
+		// tlsConfig tests
+		{
+			input: exec.Command("git", "ls-remote"),
+			tlsConfig: &tlsConfig{
+				SSLNoVerify: true,
+			},
+			expectedEnv:  append(expectedEnv, "GIT_SSL_NO_VERIFY=true"),
+			expectedArgs: []string{"git", "-c", "credential.helper=", "ls-remote"},
+		},
+		{
+			input: exec.Command("git", "ls-remote"),
+			tlsConfig: &tlsConfig{
+				SSLCAInfo: "/tmp/foo.certs",
+			},
+			expectedEnv:  append(expectedEnv, "GIT_SSL_CAINFO=/tmp/foo.certs"),
+			expectedArgs: []string{"git", "-c", "credential.helper=", "ls-remote"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(strings.Join(test.input.Args, " "), func(t *testing.T) {
+			conf := test.tlsConfig
+			if conf == nil {
+				conf = &tlsConfig{}
+			}
+			configureRemoteGitCommand(test.input, conf)
+			if !reflect.DeepEqual(test.input.Env, test.expectedEnv) {
+				t.Errorf("\ngot:  %s\nwant: %s\n", test.input.Env, test.expectedEnv)
+			}
+			if !reflect.DeepEqual(test.input.Args, test.expectedArgs) {
+				t.Errorf("\ngot:  %s\nwant: %s\n", test.input.Args, test.expectedArgs)
+			}
+		})
+	}
+}
+
+func TestConfigureRemoteGitCommand_tls(t *testing.T) {
+	baseEnv := []string{
+		"GIT_ASKPASS=true",
+		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=30",
+	}
+
+	cases := []struct {
+		conf *tlsConfig
+		want []string
+	}{{
+		conf: &tlsConfig{},
+		want: nil,
+	}, {
+		conf: &tlsConfig{
+			SSLNoVerify: true,
+		},
+		want: []string{
+			"GIT_SSL_NO_VERIFY=true",
+		},
+	}}
+	for _, tc := range cases {
+		cmd := exec.Command("git", "clone")
+		configureRemoteGitCommand(cmd, tc.conf)
+		want := append(baseEnv, tc.want...)
+		if !reflect.DeepEqual(cmd.Env, want) {
+			t.Errorf("mismatch for %#+v (-want +got):\n%s", tc.conf, cmp.Diff(want, cmd.Env))
+		}
+	}
+}
 
 func TestProgressWriter(t *testing.T) {
 	testCases := []struct {
@@ -113,7 +215,7 @@ func TestProgressWriter(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			var w progressWriter
 			for _, write := range testCase.writes {
-				w.Write([]byte(write))
+				_, _ = w.Write([]byte(write))
 			}
 			if actual := w.String(); testCase.text != actual {
 				t.Fatalf("\ngot:\n%s\nwant:\n%s\n", actual, testCase.text)
@@ -187,4 +289,42 @@ func TestUpdateFileIfDifferent(t *testing.T) {
 	if update("baz") {
 		t.Fatal("expected update to not update file")
 	}
+}
+
+func TestFlushingResponseWriter(t *testing.T) {
+	flush := make(chan struct{})
+	fw := &flushingResponseWriter{
+		w: httptest.NewRecorder(),
+		flusher: flushFunc(func() {
+			flush <- struct{}{}
+		}),
+	}
+	done := make(chan struct{})
+	go func() {
+		fw.periodicFlush()
+		close(done)
+	}()
+
+	_, _ = fw.Write([]byte("hi"))
+
+	select {
+	case <-flush:
+		close(flush)
+	case <-time.After(5 * time.Second):
+		t.Fatal("periodic flush did not happen")
+	}
+
+	fw.Close()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("periodic flush goroutine did not close")
+	}
+}
+
+type flushFunc func()
+
+func (f flushFunc) Flush() {
+	f()
 }

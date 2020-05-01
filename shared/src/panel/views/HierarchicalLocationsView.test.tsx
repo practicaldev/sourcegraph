@@ -5,26 +5,29 @@ jest.mock('react-visibility-sensor', () => 'VisibilitySensor')
 
 import { Location } from '@sourcegraph/extension-api-types'
 import H from 'history'
+import { noop } from 'lodash'
 import React from 'react'
 import renderer from 'react-test-renderer'
-import { BehaviorSubject, concat, NEVER, Observable, of } from 'rxjs'
+import { concat, NEVER, of } from 'rxjs'
 import * as sinon from 'sinon'
-import { setLinkComponent } from '../../components/Link'
+import { createContextService } from '../../api/client/context/contextService'
+import { parseTemplate } from '../../api/client/context/expr/evaluator'
+import { ContributionsEntry, ContributionUnsubscribable } from '../../api/client/services/contribution'
 import { Controller } from '../../extensions/controller'
 import { SettingsCascadeOrError } from '../../settings/settings'
 import { HierarchicalLocationsView, HierarchicalLocationsViewProps } from './HierarchicalLocationsView'
+import { MaybeLoadingResult } from '@sourcegraph/codeintellify'
+
+jest.mock('mdi-react/SourceRepositoryIcon', () => 'SourceRepositoryIcon')
 
 describe('<HierarchicalLocationsView />', () => {
-    beforeAll(() => {
-        setLinkComponent((props: any) => <a {...props} />)
-    })
     const getProps = () => {
         const services = {
-            context: {
-                data: new BehaviorSubject<{}>({}),
-            },
+            context: createContextService({ clientApplication: 'other' }),
             contribution: {
-                registerContributions: sinon.spy(),
+                registerContributions: sinon.spy(
+                    (entry: ContributionsEntry): ContributionUnsubscribable => ({ entry, unsubscribe: noop })
+                ),
             },
         }
         const extensionsController: Pick<Controller, 'services'> = {
@@ -36,7 +39,7 @@ describe('<HierarchicalLocationsView />', () => {
         }
         const location: H.Location = {
             hash: '#L36:18&tab=references',
-            pathname: '/github.com/sourcegraph/sourcegraph/-/blob/client/browser/src/libs/phabricator/index.tsx',
+            pathname: '/github.com/sourcegraph/sourcegraph/-/blob/browser/src/libs/phabricator/index.tsx',
             search: '',
             state: {},
         }
@@ -61,7 +64,14 @@ describe('<HierarchicalLocationsView />', () => {
     test('shows a spinner if locations emits empty and is not complete', () => {
         const { props } = getProps()
         expect(
-            renderer.create(<HierarchicalLocationsView {...props} locations={of(concat(of([]), NEVER))} />).toJSON()
+            renderer
+                .create(
+                    <HierarchicalLocationsView
+                        {...props}
+                        locations={concat(of({ isLoading: true, result: [] }), NEVER)}
+                    />
+                )
+                .toJSON()
         ).toMatchSnapshot()
     })
 
@@ -69,13 +79,13 @@ describe('<HierarchicalLocationsView />', () => {
         const { props, services } = getProps()
         renderer.create(<HierarchicalLocationsView {...props} />)
         expect(services.contribution.registerContributions.called).toBe(true)
-        expect(services.contribution.registerContributions.getCall(0).args[0]).toMatchObject({
+        const expected: ContributionsEntry = {
             contributions: {
                 actions: [
                     {
                         id: 'panel.locations.groupByFile',
-                        title: 'Group by file',
-                        category: 'Locations (panel)',
+                        title: parseTemplate('Group by file'),
+                        category: parseTemplate('Locations (panel)'),
                         command: 'updateConfiguration',
                     },
                 ],
@@ -87,7 +97,8 @@ describe('<HierarchicalLocationsView />', () => {
                     ],
                 },
             },
-        })
+        }
+        expect(services.contribution.registerContributions.getCall(0).args[0]).toMatchObject(expected)
     })
 
     const SAMPLE_LOCATION: Location = {
@@ -105,7 +116,7 @@ describe('<HierarchicalLocationsView />', () => {
     }
 
     test('displays a single location when complete', () => {
-        const locations = of<Observable<Location[]>>(of([SAMPLE_LOCATION]))
+        const locations = of<MaybeLoadingResult<Location[]>>({ isLoading: false, result: [SAMPLE_LOCATION] })
         const props = {
             ...getProps().props,
             locations,
@@ -116,13 +127,13 @@ describe('<HierarchicalLocationsView />', () => {
     test('displays partial locations before complete', () => {
         const props = {
             ...getProps().props,
-            locations: concat(of(of([SAMPLE_LOCATION])), NEVER),
+            locations: concat(of({ isLoading: false, result: [SAMPLE_LOCATION] }), NEVER),
         }
         expect(renderer.create(<HierarchicalLocationsView {...props} />).toJSON()).toMatchSnapshot()
     })
 
     test('displays multiple locations grouped by file', () => {
-        const locations = of<Location[]>([
+        const locations: Location[] = [
             {
                 uri: 'git://github.com/foo/bar#file1.txt',
                 range: {
@@ -188,7 +199,7 @@ describe('<HierarchicalLocationsView />', () => {
                     },
                 },
             },
-        ])
+        ]
         const props: HierarchicalLocationsViewProps = {
             ...getProps().props,
             settingsCascade: {
@@ -197,12 +208,8 @@ describe('<HierarchicalLocationsView />', () => {
                     'panel.locations.groupByFile': true,
                 },
             },
-            locations: of(locations),
+            locations: of({ isLoading: false, result: locations }),
         }
         expect(renderer.create(<HierarchicalLocationsView {...props} />).toJSON()).toMatchSnapshot()
-    })
-
-    afterAll(() => {
-        setLinkComponent(null as any)
     })
 })

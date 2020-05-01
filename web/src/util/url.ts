@@ -1,32 +1,16 @@
 import { Position, Range } from '@sourcegraph/extension-api-types'
 import {
-    AbsoluteRepoFile,
     encodeRepoRev,
     LineOrPositionOrRange,
     lprToRange,
     ParsedRepoURI,
     parseHash,
-    PositionSpec,
-    RenderModeSpec,
     RepoFile,
     toPositionHashComponent,
-    toPositionOrRangeHash,
-    toViewStateHashComponent,
-    ViewStateSpec,
 } from '../../../shared/src/util/url'
 
-export function toTreeURL(ctx: RepoFile): string {
-    const rev = ctx.commitID || ctx.rev || ''
-    return `/${encodeRepoRev(ctx.repoName, rev)}/-/tree/${ctx.filePath}`
-}
-
-export function toAbsoluteBlobURL(
-    ctx: AbsoluteRepoFile & Partial<PositionSpec> & Partial<ViewStateSpec> & Partial<RenderModeSpec>
-): string {
-    const rev = ctx.commitID ? ctx.commitID : ctx.rev
-    return `/${encodeRepoRev(ctx.repoName, rev)}/-/blob/${ctx.filePath}${toPositionOrRangeHash(
-        ctx
-    )}${toViewStateHashComponent(ctx.viewState)}`
+export function toTreeURL(target: RepoFile): string {
+    return `/${encodeRepoRev(target)}/-/tree/${target.filePath}`
 }
 
 /**
@@ -60,14 +44,15 @@ function formatLineOrPositionOrRange(lpr: LineOrPositionOrRange): string {
 /**
  * Replaces the revision in the given URL, or adds one if there is not already
  * one.
+ *
  * @param href The URL whose revision should be replaced.
  */
 export function replaceRevisionInURL(href: string, newRev: string): string {
-    const parsed = parseBrowserRepoURL(window.location.href)
-    const repoRev = `/${encodeRepoRev(parsed.repoName, parsed.rev)}`
+    const parsed = parseBrowserRepoURL(href)
+    const repoRev = `/${encodeRepoRev(parsed)}`
 
-    const u = new URL(window.location.href)
-    u.pathname = `/${encodeRepoRev(parsed.repoName, newRev)}${u.pathname.slice(repoRev.length)}`
+    const u = new URL(href, window.location.href)
+    u.pathname = `/${encodeRepoRev({ ...parsed, rev: newRev })}${u.pathname.slice(repoRev.length)}`
     return `${u.pathname}${u.search}${u.hash}`
 }
 
@@ -75,7 +60,7 @@ export function replaceRevisionInURL(href: string, newRev: string): string {
  * Parses the properties of a blob URL.
  */
 export function parseBrowserRepoURL(href: string): ParsedRepoURI {
-    const loc = new URL(href, typeof window !== 'undefined' ? window.location.href : undefined)
+    const loc = new URL(href, window.location.href)
     let pathname = loc.pathname.slice(1) // trim leading '/'
     if (pathname.endsWith('/')) {
         pathname = pathname.substr(0, pathname.length - 1) // trim trailing '/'
@@ -155,21 +140,10 @@ export interface ParsedRepoRev {
  * Parses a repo-rev string like "my/repo@my/rev" to the repo and rev components.
  */
 export function parseRepoRev(repoRev: string): ParsedRepoRev {
-    const [repo, rev] = repoRev.split('@', 2)
+    const [repo, rev] = repoRev.split('@', 2) as [string, string | undefined]
     return {
         repoName: decodeURIComponent(repo),
         rev: rev && decodeURIComponent(rev),
         rawRev: rev,
-    }
-}
-
-/**
- * Correctly handle use of meta/ctrl/alt keys during onClick events that open new pages
- */
-export function openFromJS(path: string, event?: MouseEvent): void {
-    if (event && (event.metaKey || event.altKey || event.ctrlKey || event.button === 1)) {
-        window.open(path, '_blank')
-    } else {
-        window.location.href = path
     }
 }

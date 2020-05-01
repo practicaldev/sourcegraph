@@ -2,14 +2,14 @@ import * as React from 'react'
 import { Subject, Subscription } from 'rxjs'
 import { debounceTime, distinctUntilChanged } from 'rxjs/operators'
 
-interface Props<C extends React.ReactElement<any>> {
+interface Props<C extends React.ReactElement = React.ReactElement> {
     className?: string
 
     /**
      * Where the resize handle is (which also determines the axis along which the element can be
      * resized).
      */
-    handlePosition: 'right' | 'top'
+    handlePosition: 'right' | 'left' | 'top'
 
     /**
      * Persist and restore the size of the element using this key.
@@ -27,6 +27,9 @@ interface Props<C extends React.ReactElement<any>> {
     element: C
 }
 
+const isHorizontal = (handlePosition: Props['handlePosition']): boolean =>
+    handlePosition === 'right' || handlePosition === 'left'
+
 interface State {
     resizing: boolean
     size: number
@@ -35,7 +38,7 @@ interface State {
 /**
  * Wraps an item in a flexbox and makes it resizable.
  */
-export class Resizable<C extends React.ReactElement<any>> extends React.PureComponent<Props<C>, State> {
+export class Resizable<C extends React.ReactElement> extends React.PureComponent<Props<C>, State> {
     private static STORAGE_KEY_PREFIX = 'Resizable:'
 
     private sizeUpdates = new Subject<number>()
@@ -69,12 +72,7 @@ export class Resizable<C extends React.ReactElement<any>> extends React.PureComp
 
     public componentDidMount(): void {
         this.subscriptions.add(
-            this.sizeUpdates
-                .pipe(
-                    distinctUntilChanged(),
-                    debounceTime(250)
-                )
-                .subscribe(size => this.setSize(size))
+            this.sizeUpdates.pipe(distinctUntilChanged(), debounceTime(250)).subscribe(size => this.setSize(size))
         )
     }
 
@@ -85,10 +83,10 @@ export class Resizable<C extends React.ReactElement<any>> extends React.PureComp
     public render(): React.ReactNode {
         return (
             <div
+                // eslint-disable-next-line react/forbid-dom-props
+                style={{ [isHorizontal(this.props.handlePosition) ? 'width' : 'height']: `${this.state.size}px` }}
                 className={`resizable resizable--${this.props.handlePosition} ${this.props.className || ''}`}
                 ref={this.setContainerRef}
-                // tslint:disable-next-line jsx-ban-props
-                style={{ [this.props.handlePosition === 'right' ? 'width' : 'height']: `${this.state.size}px` }}
             >
                 <div
                     className={`resizable__ghost ${this.state.resizing ? 'resizable__ghost--resizing' : ''}`}
@@ -106,29 +104,32 @@ export class Resizable<C extends React.ReactElement<any>> extends React.PureComp
         )
     }
 
-    private setContainerRef = (e: HTMLElement | null) => (this.containerRef = e)
+    private setContainerRef = (e: HTMLElement | null): void => {
+        this.containerRef = e
+    }
 
-    private onMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    private onMouseDown = (e: React.MouseEvent<HTMLDivElement>): void => {
         e.preventDefault()
         if (!this.state.resizing) {
             this.setState({ resizing: true })
         }
     }
 
-    private onMouseUp = (e: React.MouseEvent<HTMLDivElement>) => {
+    private onMouseUp = (e: React.MouseEvent<HTMLDivElement>): void => {
         e.preventDefault()
         if (this.state.resizing) {
             this.setState({ resizing: false })
         }
     }
 
-    private onMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    private onMouseMove = (e: React.MouseEvent<HTMLDivElement>): void => {
         e.preventDefault()
         if (this.state.resizing && this.containerRef) {
-            let size =
-                this.props.handlePosition === 'right'
+            let size = isHorizontal(this.props.handlePosition)
+                ? this.props.handlePosition === 'right'
                     ? e.pageX - this.containerRef.getBoundingClientRect().left
-                    : this.containerRef.getBoundingClientRect().bottom - e.pageY
+                    : this.containerRef.getBoundingClientRect().right - e.pageX
+                : this.containerRef.getBoundingClientRect().bottom - e.pageY
             if (e.shiftKey) {
                 size = Math.ceil(size / 20) * 20
             }

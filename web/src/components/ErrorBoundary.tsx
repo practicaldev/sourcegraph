@@ -3,7 +3,7 @@ import H from 'history'
 import ErrorIcon from 'mdi-react/ErrorIcon'
 import ReloadIcon from 'mdi-react/ReloadIcon'
 import React from 'react'
-import { asError } from '../../../shared/src/util/errors'
+import { asError, isErrorLike } from '../../../shared/src/util/errors'
 import { HeroPage } from './HeroPage'
 
 interface Props {
@@ -45,6 +45,7 @@ export class ErrorBoundary extends React.PureComponent<Props, State> {
         if (prevProps.location !== this.props.location) {
             // Reset error state when location changes, so that the user can try navigating to a different page to
             // clear the error.
+            /* eslint react/no-did-update-set-state: warn */
             this.setState({ error: undefined })
         }
     }
@@ -62,7 +63,7 @@ export class ErrorBoundary extends React.PureComponent<Props, State> {
                         subtitle={
                             <div className="container">
                                 <p>A new version of Sourcegraph is available.</p>
-                                <button className="btn btn-primary" onClick={this.onReloadClick}>
+                                <button type="button" className="btn btn-primary" onClick={this.onReloadClick}>
                                     Reload to update
                                 </button>
                             </div>
@@ -82,7 +83,7 @@ export class ErrorBoundary extends React.PureComponent<Props, State> {
                                 contact your site admin or Sourcegraph support.
                             </p>
                             <p>
-                                <code>{this.state.error.message}</code>
+                                <code className="text-wrap">{this.state.error.message}</code>
                             </p>
                         </div>
                     }
@@ -93,11 +94,11 @@ export class ErrorBoundary extends React.PureComponent<Props, State> {
         return this.props.children
     }
 
-    private onReloadClick: React.MouseEventHandler<HTMLElement> = e => {
+    private onReloadClick: React.MouseEventHandler<HTMLElement> = () => {
         window.location.reload(true) // hard page reload
     }
 }
 
-function isWebpackChunkError(err: any): boolean {
-    return typeof err.request === 'string' && err.message.startsWith('Loading chunk')
+function isWebpackChunkError(value: unknown): boolean {
+    return isErrorLike(value) && value.name === 'ChunkLoadError'
 }

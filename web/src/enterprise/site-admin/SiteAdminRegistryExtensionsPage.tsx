@@ -1,4 +1,3 @@
-import { upperFirst } from 'lodash'
 import AddIcon from 'mdi-react/AddIcon'
 import * as React from 'react'
 import { RouteComponentProps } from 'react-router'
@@ -16,10 +15,13 @@ import { registryExtensionFragment } from '../../extensions/extension/ExtensionA
 import { eventLogger } from '../../tracking/eventLogger'
 import { deleteRegistryExtensionWithConfirmation } from '../extensions/registry/backend'
 import { RegistryExtensionSourceBadge } from '../extensions/registry/RegistryExtensionSourceBadge'
+import { ErrorAlert } from '../../components/alerts'
+import * as H from 'history'
 
 interface RegistryExtensionNodeSiteAdminProps {
     node: GQL.IRegistryExtension
     onDidUpdate: () => void
+    history: H.History
 }
 
 interface RegistryExtensionNodeSiteAdminState {
@@ -59,7 +61,10 @@ class RegistryExtensionNodeSiteAdminRow extends React.PureComponent<
                         )
                     )
                 )
-                .subscribe(stateUpdate => this.setState(stateUpdate), error => console.error(error))
+                .subscribe(
+                    stateUpdate => this.setState(stateUpdate),
+                    error => console.error(error)
+                )
         )
     }
 
@@ -106,7 +111,8 @@ class RegistryExtensionNodeSiteAdminRow extends React.PureComponent<
                         )}
                         {this.props.node.viewerCanAdminister && (
                             <button
-                                className="btn btn-outline-danger btn-sm ml-1"
+                                type="button"
+                                className="btn btn-danger btn-sm ml-1"
                                 onClick={this.deleteExtension}
                                 disabled={loading}
                                 title="Delete extension"
@@ -117,15 +123,13 @@ class RegistryExtensionNodeSiteAdminRow extends React.PureComponent<
                     </div>
                 </div>
                 {isErrorLike(this.state.deletionOrError) && (
-                    <div className="alert alert-danger mt-2">
-                        Error: {upperFirst(this.state.deletionOrError.message)}
-                    </div>
+                    <ErrorAlert className="mt-2" error={this.state.deletionOrError} history={this.props.history} />
                 )}
             </li>
         )
     }
 
-    private deleteExtension = () => this.deletes.next()
+    private deleteExtension = (): void => this.deletes.next()
 }
 
 interface Props extends RouteComponentProps<{}> {}
@@ -160,17 +164,18 @@ export class SiteAdminRegistryExtensionsPage extends React.PureComponent<Props> 
     }
 
     public render(): JSX.Element | null {
-        const nodeProps: Pick<RegistryExtensionNodeSiteAdminProps, 'onDidUpdate'> = {
+        const nodeProps: Omit<RegistryExtensionNodeSiteAdminProps, 'node'> = {
             onDidUpdate: this.onDidUpdateRegistryExtension,
+            history: this.props.history,
         }
 
         return (
             <div className="registry-extensions-page">
                 <PageTitle title="Registry extensions" />
-                <div className="d-flex justify-content-between align-items-center mt-3 mb-3">
+                <div className="d-flex justify-content-between align-items-center mb-3">
                     <h2 className="mb-0">Registry extensions</h2>
                     <div>
-                        <Link className="btn btn-outline-link mr-sm-2" to="/extensions">
+                        <Link className="btn btn-link mr-sm-2" to="/extensions">
                             View extensions
                         </Link>
                         <Link className="btn btn-primary" to="/extensions/registry/new">
@@ -182,7 +187,7 @@ export class SiteAdminRegistryExtensionsPage extends React.PureComponent<Props> 
                     Extensions add features to Sourcegraph and other connected tools (such as editors, code hosts, and
                     code review tools).
                 </p>
-                <FilteredConnection<GQL.IRegistryExtension, Pick<RegistryExtensionNodeSiteAdminProps, 'onDidUpdate'>>
+                <FilteredConnection<GQL.IRegistryExtension, Omit<RegistryExtensionNodeSiteAdminProps, 'node'>>
                     className="list-group list-group-flush registry-extensions-list"
                     listComponent="ul"
                     noun="extension"
@@ -251,5 +256,5 @@ export class SiteAdminRegistryExtensionsPage extends React.PureComponent<Props> 
             })
         )
 
-    private onDidUpdateRegistryExtension = () => this.updates.next()
+    private onDidUpdateRegistryExtension = (): void => this.updates.next()
 }

@@ -7,30 +7,31 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
-	"github.com/sourcegraph/sourcegraph/pkg/actor"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/env"
-	"github.com/sourcegraph/sourcegraph/pkg/errcode"
-	"github.com/sourcegraph/sourcegraph/pkg/gitserver"
-	"github.com/sourcegraph/sourcegraph/pkg/repoupdater"
-	"github.com/sourcegraph/sourcegraph/pkg/routevar"
-	"github.com/sourcegraph/sourcegraph/pkg/vcs/git"
-
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/backend"
-
 	"github.com/gorilla/mux"
+	"github.com/inconshreveable/log15"
 	"github.com/pkg/errors"
-
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/auth"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/backend"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/envvar"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/app/assetsutil"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/app/jscontext"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/pkg/handlerutil"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
-	"github.com/sourcegraph/sourcegraph/pkg/conf"
-	"github.com/sourcegraph/sourcegraph/pkg/vcs"
+	"github.com/sourcegraph/sourcegraph/internal/actor"
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/conf"
+	"github.com/sourcegraph/sourcegraph/internal/env"
+	"github.com/sourcegraph/sourcegraph/internal/errcode"
+	"github.com/sourcegraph/sourcegraph/internal/gitserver"
+	"github.com/sourcegraph/sourcegraph/internal/repoupdater"
+	"github.com/sourcegraph/sourcegraph/internal/routevar"
+	"github.com/sourcegraph/sourcegraph/internal/vcs"
+	"github.com/sourcegraph/sourcegraph/internal/vcs/git"
 )
 
 type InjectedHTML struct {
@@ -48,6 +49,9 @@ type Metadata struct {
 	// Description is the description of the page for Twitter cards, OpenGraph,
 	// etc. e.g. "View this link in Sourcegraph Editor."
 	Description string
+
+	// ShowPreview controls whether or not OpenGraph/Twitter card/etc metadata is rendered.
+	ShowPreview bool
 }
 
 type Common struct {
@@ -58,14 +62,15 @@ type Common struct {
 	Title    string
 	Error    *pageError
 
-	InjectSourcegraphTracker     bool
-	InjectGoogleAnalyticsTracker bool
+	WebpackDevServer bool // whether the Webpack dev server is running (WEBPACK_DEV_SERVER env var)
 
 	// The fields below have zero values when not on a repo page.
 	Repo         *types.Repo
 	Rev          string // unresolved / user-specified revision (e.x.: "@master")
 	api.CommitID        // resolved SHA1 revision
 }
+
+var webpackDevServer, _ = strconv.ParseBool(os.Getenv("WEBPACK_DEV_SERVER"))
 
 // repoShortName trims the first path element of the given repo name if it has
 // at least two path components.
@@ -93,39 +98,30 @@ func repoShortName(name api.RepoName) string {
 // In the case of a repository that is cloning, a Common data structure is
 // returned but it has an incomplete RevSpec.
 func newCommon(w http.ResponseWriter, r *http.Request, title string, serveError func(w http.ResponseWriter, r *http.Request, err error, statusCode int)) (*Common, error) {
-	injectTelligentTracker := false
-	injectGoogleAnalyticsTracker := false
-	if envvar.SourcegraphDotComMode() {
-		injectTelligentTracker = true
-		if strings.TrimPrefix(r.URL.Path, "/") == routeWelcome {
-			injectGoogleAnalyticsTracker = true
-		}
-	}
-
 	common := &Common{
 		Injected: InjectedHTML{
-			HeadTop:    template.HTML(conf.Get().Critical.HtmlHeadTop),
-			HeadBottom: template.HTML(conf.Get().Critical.HtmlHeadBottom),
-			BodyTop:    template.HTML(conf.Get().Critical.HtmlBodyTop),
-			BodyBottom: template.HTML(conf.Get().Critical.HtmlBodyBottom),
+			HeadTop:    template.HTML(conf.Get().HtmlHeadTop),
+			HeadBottom: template.HTML(conf.Get().HtmlHeadBottom),
+			BodyTop:    template.HTML(conf.Get().HtmlBodyTop),
+			BodyBottom: template.HTML(conf.Get().HtmlBodyBottom),
 		},
 		Context:  jscontext.NewJSContextFromRequest(r),
 		AssetURL: assetsutil.URL("").String(),
 		Title:    title,
 		Metadata: &Metadata{
-			Title:       "Sourcegraph",
+			Title:       conf.BrandName(),
 			Description: "Sourcegraph is a web-based code search and navigation tool for dev teams. Search, navigate, and review code. Find answers.",
+			ShowPreview: r.URL.Path == "/sign-in" && r.URL.RawQuery == "returnTo=%2F",
 		},
 
-		InjectSourcegraphTracker:     injectTelligentTracker,
-		InjectGoogleAnalyticsTracker: injectGoogleAnalyticsTracker,
+		WebpackDevServer: webpackDevServer,
 	}
 
 	if _, ok := mux.Vars(r)["Repo"]; ok {
 		// Common repo pages (blob, tree, etc).
 		var err error
 		common.Repo, common.CommitID, err = handlerutil.GetRepoAndRev(r.Context(), mux.Vars(r))
-		isRepoEmptyError := routevar.ToRepoRev(mux.Vars(r)).Rev == "" && git.IsRevisionNotFound(errors.Cause(err)) // should reply with HTTP 200
+		isRepoEmptyError := routevar.ToRepoRev(mux.Vars(r)).Rev == "" && gitserver.IsRevisionNotFound(errors.Cause(err)) // should reply with HTTP 200
 		if err != nil && !isRepoEmptyError {
 			if e, ok := err.(*handlerutil.URLMovedError); ok {
 				// The repository has been renamed, e.g. "github.com/docker/docker"
@@ -147,22 +143,18 @@ func newCommon(w http.ResponseWriter, r *http.Request, title string, serveError 
 				http.Redirect(w, r, u.String(), http.StatusSeeOther)
 				return nil, nil
 			}
-			if errcode.IsNotFound(err) || errors.Cause(err) == repoupdater.ErrNotFound {
-				// Repo does not exist.
-				serveError(w, r, err, http.StatusNotFound)
-				return nil, nil
-			}
-			if errors.Cause(err) == repoupdater.ErrUnauthorized {
-				// Not authorized to access repository.
-				serveError(w, r, err, http.StatusUnauthorized)
-				return nil, nil
-			}
-			if git.IsRevisionNotFound(errors.Cause(err)) {
+			if gitserver.IsRevisionNotFound(errors.Cause(err)) {
 				// Revision does not exist.
 				serveError(w, r, err, http.StatusNotFound)
 				return nil, nil
 			}
 			if _, ok := errors.Cause(err).(*gitserver.RepoNotCloneableErr); ok {
+				if errcode.IsNotFound(err) {
+					// Repository is not found.
+					serveError(w, r, err, http.StatusNotFound)
+					return nil, nil
+				}
+
 				// Repository is not clonable.
 				dangerouslyServeError(w, r, errors.New("repository could not be cloned"), http.StatusInternalServerError)
 				return nil, nil
@@ -176,6 +168,16 @@ func newCommon(w http.ResponseWriter, r *http.Request, title string, serveError 
 				serveError(w, r, err, http.StatusNotFound)
 				return nil, nil
 			}
+			if errcode.IsNotFound(err) {
+				// Repo does not exist.
+				serveError(w, r, err, http.StatusNotFound)
+				return nil, nil
+			}
+			if errcode.IsUnauthorized(err) {
+				// Not authorized to access repository.
+				serveError(w, r, err, http.StatusUnauthorized)
+				return nil, nil
+			}
 			return nil, err
 		}
 		if common.Repo.Name == "github.com/sourcegraphtest/Always500Test" {
@@ -185,8 +187,15 @@ func newCommon(w http.ResponseWriter, r *http.Request, title string, serveError 
 		// Update gitserver contents for a repo whenever it is visited.
 		go func() {
 			ctx := context.Background()
-			if gitserverRepo, err := backend.GitRepo(ctx, common.Repo); err == nil {
-				repoupdater.DefaultClient.EnqueueRepoUpdate(ctx, gitserverRepo)
+			gitserverRepo, err := backend.GitRepo(ctx, common.Repo)
+			if err != nil {
+				log15.Error("backend.GitRepo", "error", err)
+				return
+			}
+
+			_, err = repoupdater.DefaultClient.EnqueueRepoUpdate(ctx, gitserverRepo)
+			if err != nil {
+				log15.Error("EnqueueRepoUpdate", "error", err)
 			}
 		}()
 	}
@@ -195,9 +204,9 @@ func newCommon(w http.ResponseWriter, r *http.Request, title string, serveError 
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
 
-func serveBasicPageString(title string) handlerFunc {
+func serveBrandedPageString(titles ...string) handlerFunc {
 	return serveBasicPage(func(c *Common, r *http.Request) string {
-		return title
+		return brandNameSubtitle(titles...)
 	})
 }
 
@@ -216,7 +225,7 @@ func serveBasicPage(title func(c *Common, r *http.Request) string) handlerFunc {
 }
 
 func serveHome(w http.ResponseWriter, r *http.Request) error {
-	common, err := newCommon(w, r, "Sourcegraph", serveError)
+	common, err := newCommon(w, r, conf.BrandName(), serveError)
 	if err != nil {
 		return err
 	}
@@ -225,12 +234,12 @@ func serveHome(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if envvar.SourcegraphDotComMode() && !actor.FromContext(r.Context()).IsAuthenticated() {
-		// The user is not signed in and tried to access Sourcegraph.com.  Redirect to /welcome so
-		// they see the welcome page.
-		http.Redirect(w, r, "/welcome", http.StatusTemporaryRedirect)
+		// The user is not signed in and tried to access Sourcegraph.com.  Redirect to
+		// about.sourcegraph.com so they see general info page.
+		http.Redirect(w, r, (&url.URL{Scheme: aboutRedirectScheme, Host: aboutRedirectHost}).String(), http.StatusTemporaryRedirect)
 		return nil
 	}
-	// sourcegraph.com (not about) homepage. There is none, redirect them to /search.
+	// On non-Sourcegraph.com instances, there is no separate homepage, so redirect to /search.
 	r.URL.Path = "/search"
 	http.Redirect(w, r, r.URL.String(), http.StatusTemporaryRedirect)
 	return nil
@@ -244,34 +253,73 @@ func serveSignIn(w http.ResponseWriter, r *http.Request) error {
 	if common == nil {
 		return nil // request was handled
 	}
-	common.Title = "Sign in - Sourcegraph"
-
-	// If we are being redirected to another page after sign in, it means the
-	// user attempted to access something without authorization. Reflect this
-	// in the status code. This is useful when users curl / code which
-	// interacts with the Sourcegraph endpoints. Specifically this is a common
-	// issue facing extension developers interacting with the raw API.
-	if r.URL.Query().Get("returnTo") != "" {
-		w.WriteHeader(http.StatusUnauthorized)
-	}
+	common.Title = brandNameSubtitle("Sign in")
 
 	return renderTemplate(w, "app.html", common)
 }
 
-func serveWelcome(w http.ResponseWriter, r *http.Request) error {
-	common, err := newCommon(w, r, "Sourcegraph", serveError)
+// redirectTreeOrBlob redirects a blob page to a tree page if the file is actually a directory,
+// or a tree page to a blob page if the directory is actually a file.
+func redirectTreeOrBlob(routeName string, common *Common, w http.ResponseWriter, r *http.Request) (requestHandled bool, err error) {
+	path := mux.Vars(r)["Path"]
+	if path == "/" || path == "" {
+		if routeName != routeRepo {
+			// Redirect to repo route
+			target := "/" + string(common.Repo.Name) + common.Rev
+			http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+			return true, nil
+		}
+		return false, nil
+	}
+	cachedRepo, err := backend.CachedGitRepo(r.Context(), common.Repo)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if common == nil {
-		return nil // request was handled
+	stat, err := git.Stat(r.Context(), *cachedRepo, common.CommitID, path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			serveError(w, r, err, http.StatusNotFound)
+			return true, nil
+		}
+		return false, err
 	}
+	expectedDir := routeName == routeTree
+	if stat.Mode().IsDir() != expectedDir {
+		target := "/" + string(common.Repo.Name) + common.Rev + "/-/"
+		if expectedDir {
+			target += "blob"
+		} else {
+			target += "tree"
+		}
+		target += path
+		http.Redirect(w, r, auth.SafeRedirectURL(target), http.StatusTemporaryRedirect)
+		return true, nil
+	}
+	return false, nil
+}
 
-	if !envvar.SourcegraphDotComMode() {
-		// The welcome page only exists on Sourcegraph.com.
-		w.WriteHeader(http.StatusNotFound)
+// serveTree serves the tree (directory) pages.
+func serveTree(title func(c *Common, r *http.Request) string) handlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		common, err := newCommon(w, r, "", serveError)
+		if err != nil {
+			return err
+		}
+		if common == nil {
+			return nil // request was handled
+		}
+
+		handled, err := redirectTreeOrBlob(routeTree, common, w, r)
+		if handled {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		common.Title = title(common, r)
+		return renderTemplate(w, "app.html", common)
 	}
-	return renderTemplate(w, "app.html", common)
 }
 
 func serveRepoOrBlob(routeName string, title func(c *Common, r *http.Request) string) handlerFunc {
@@ -283,6 +331,15 @@ func serveRepoOrBlob(routeName string, title func(c *Common, r *http.Request) st
 		if common == nil {
 			return nil // request was handled
 		}
+
+		handled, err := redirectTreeOrBlob(routeName, common, w, r)
+		if handled {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
 		common.Title = title(common, r)
 
 		q := r.URL.Query()

@@ -1,21 +1,11 @@
 Phabricator/Gitolite documentation
 ==================================
 
-Gitolite
-____________
-
-Most customers who use our Phabricator integration use gitolite as their
-repository hosting service. For ease and reproducibility, we use
-gitolite as well for testing.
-
-If gitolite.sgdev.org is running, give an admin (e.g. Beyang or Isaac)
-your public key and ask them give you permissions.
-
 ### Setup
 
-#### K8s
+#### Kubernetes
 
-1. Spin up gitolite.sgdev.org in the tooling cluster
+1. Spin up gitolite.sgdev.org in the tooling cluster if it does not yet exist.
 
 Create the gitolite pods by navigating to the *infrastructure* repository and applying the Gitolite config.
 
@@ -106,7 +96,7 @@ kubectl apply -f ./phabricator
 
 ##### Docker (local)
 
-You can run locally via docker. We have 
+You can run locally via docker. We have
 [<https://sourcegraph.com/github.com/sourcegraph/sourcegraph/-/tree/dev/phabricator>](https://sourcegraph.com/github.com/sourcegraph/sourcegraph/-/tree/dev/phabricator)
 for this using
 [Bitnami.](https://docs.bitnami.com/installer/apps/phabricator/)
@@ -121,9 +111,9 @@ dev/phabricator/stop.sh
 
 #### Add repositories
 
-1. Click the link to [Diffusion](http://127.0.0.1/diffusion/)
+1. Click the link to [Diffusion](http://localhost/diffusion/)
 
-2. [Create a repository](http://127.0.0.1/diffusion/edit) and
+2. [Create a repository](http://localhost/diffusion/edit) and
     select git as the vcs
 
     Give the repository a name and a callsign with only
@@ -147,6 +137,8 @@ dev/phabricator/stop.sh
 
 #### Install the Sourcegraph Phabricator extension.
 
+You can use `dev/phabricator/install-sourcegraph.sh`. To install it manually:
+
 SSH into your Phabricator instance and follow [the installation steps in the README.](https://github.com/sourcegraph/phabricator-extension/blob/master/README.md#installation)
 If you used the helper scripts, the root Phabricator directory
 will be `/opt/bitnami/phabricator`.
@@ -159,23 +151,23 @@ will be `/opt/bitnami/phabricator`.
 
 3. Ensure `.arcconfig` has been added
 
-```json
-  {
-    "phabricator.uri" : "https://<your phabricator host>/"
-  }
-```
+    ```
+      {
+        "phabricator.uri" : "https://<your phabricator host>/"
+      }
+    ```
 
 4. Make some changes and push the diff to Phabricator's
 
     Use `arc` to create a new branch
 
-    ```shell
+    ```
     arc branch my-branch
     ```
 
     Make some changes, commit them, and upload the diff to Phabricator. DO NOT PUSH them to the git remote. If you push the changes to the git remote, we no longer are testing a critical feature of the Sourcegraph Phabricator integration, which is that it uses staging areas if configured or attempts to apply patchsets.
 
-    ```shell
+    ```
     git add . git commit -m "some changes" arc diff
     ```
 
@@ -184,3 +176,50 @@ will be `/opt/bitnami/phabricator`.
     At this point, changes live on Phabricator that aren't in the git remote. Sourcegraph either gets these changes from [staging areas (cmd+f for "staging area")](https://secure.phabricator.com/book/phabricator/article/harbormaster/) or [it attempts to apply the patchset on a temporary clone of the repo.](https://sourcegraph.com/github.com/sourcegraph/sourcegraph/-/blob/cmd/frontend/graphqlbackend/repository.go#L225-338)
 
     You are now at a point where you can test the Sourcegraph extensions in Phabricator code review. Navigate to the diff that `arc` created in your browser and the extension should be working just as the browser extension does on GitHub.
+
+
+### Testing
+
+#### Browser Extension
+
+1. Verify [`sourcegraph.enabled`](https://phabricator.sgdev.org/config/edit/sourcegraph.enabled/) is set to `true`
+2. Point your browser extension to a Sourcegraph instance with the following code host:
+    ```
+    {
+      "prefix": "gitolite.sgdev.org/",
+      "host": "git@gitolite.sgdev.org",
+    }
+    ```
+3. Verify the [`sourcegraph.callsignMappings`](https://phabricator.sgdev.org/config/edit/sourcegraph.callsignMappings/) are correctly set
+4. Make sure your browser extension has permissions for `https://phabricator.sgdev.org` (you can check this through the popup)
+5. Navigate to a [single file](https://phabricator.sgdev.org/source/test/browse/master/main.go)
+    - Verify "View on Sourcegraph" button is present and working correctly
+    - Verify hovers work as expected
+6. Navigate to a [diff](https://phabricator.sgdev.org/D3)
+    - Verify "View on Sourcegraph" buttons are present on all change types, and working correctly
+    - Verify hovers are working correctly on added, removed, unchanged lines
+#### Native Integration
+
+1. Run a local Sourcegraph dev instance tunnelled through ngrok
+2. Set `corsOrigin` to `"https://phabricator.sgdev.org"` in your site config
+3. Add the following Gitolite code host:
+    ```
+    {
+      "prefix": "gitolite.sgdev.org/",
+      "host": "git@gitolite.sgdev.org",
+    }
+    ```
+4. Verify that the phabricator assets are served:
+    - `%NGROK_URL%/.assets/extension/scripts/phabricator.bundle.js`
+    - `%NGROK_URL%/.assets/extension/css/app.bundle.css`
+5. Set [`sourcegraph.url`](https://phabricator.sgdev.org/config/edit/sourcegraph.url/) to your tunnelled ngrok URL
+6. Verify the [`sourcegraph.callsignMappings`](https://phabricator.sgdev.org/config/edit/sourcegraph.callsignMappings/) are correctly set
+7. Verify [`sourcegraph.enabled`](https://phabricator.sgdev.org/config/edit/sourcegraph.enabled/) is set to `true`
+8. Navigate to a [single file](https://phabricator.sgdev.org/source/test/browse/master/main.go)
+    - Verify "View on Sourcegraph" button is present and working correctly
+    - Verify hovers work as expected
+9. Navigate to a [diff](https://phabricator.sgdev.org/D3)
+    - Verify "View on Sourcegraph" buttons are present on all change types, and working correctly
+    - Verify hovers are working correctly on added, removed, unchanged lines
+
+

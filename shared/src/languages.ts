@@ -62,7 +62,7 @@ function getModeFromExtension(ext: string): string | undefined {
         case 'sh':
         case 'bash':
         case 'zsh':
-            return 'bash'
+            return 'shell'
 
         // Clojure
         case 'clj':
@@ -91,17 +91,24 @@ function getModeFromExtension(ext: string): string | undefined {
         // C#
         case 'cs':
         case 'csx':
-            return 'cs'
+            return 'csharp'
 
         // C++
         case 'c':
         case 'cc':
         case 'cpp':
+        case 'cxx':
         case 'c++':
         case 'h++':
         case 'hh':
         case 'h':
+        case 'hpp':
             return 'cpp'
+
+        // CUDA
+        case 'cu':
+        case 'cuh':
+            return 'cuda'
 
         // Dart
         case 'dart':
@@ -139,7 +146,7 @@ function getModeFromExtension(ext: string): string | undefined {
         case 'for':
         case 'frt':
         case 'fr':
-        case 'fs':
+        // case 'fs':
         case 'forth':
         case '4th':
         case 'fth':
@@ -152,6 +159,14 @@ function getModeFromExtension(ext: string): string | undefined {
         // Go
         case 'go':
             return 'go'
+
+        // GraphQL
+        case 'graphql':
+            return 'graphql'
+
+        // Groovy
+        case 'groovy':
+            return 'groovy'
 
         // HAML
         case 'haml':
@@ -204,6 +219,11 @@ function getModeFromExtension(ext: string): string | undefined {
         case 'sublime-settings':
         case 'sublime-workspace':
             return 'json'
+
+        // Jsonnet
+        case 'jsonnet':
+        case 'libsonnet':
+            return 'jsonnet'
 
         // Julia
         case 'jl':
@@ -271,11 +291,17 @@ function getModeFromExtension(ext: string): string | undefined {
         case 're': // reason has the same language server as ocaml
             return 'ocaml'
 
+        // Pascal
+        case 'p':
+        case 'pas':
+        case 'pp':
+            return 'pascal'
+
         // Perl
         case 'pl':
         case 'al':
         case 'cgi':
-        case 'fcgi':
+        // case 'fcgi':
         case 'perl':
         case 'ph':
         case 'plx':
@@ -325,7 +351,7 @@ function getModeFromExtension(ext: string): string | undefined {
         case 'rb':
         case 'builder':
         case 'eye':
-        case 'fcgi':
+        // case 'fcgi':
         case 'gemspec':
         case 'god':
         case 'jbuilder':
@@ -403,10 +429,18 @@ function getModeFromExtension(ext: string): string | undefined {
         case 'vbs':
             return 'vbscrip'
 
-        // Verilog
+        // Verilog, including SystemVerilog
         case 'v':
         case 'veo':
+        case 'sv':
+        case 'svh':
+        case 'svi':
             return 'verilog'
+
+        // VHDL
+        case 'vhd':
+        case 'vhdl':
+            return 'vhdl'
 
         // VIM
         case 'vim':
@@ -452,7 +486,7 @@ function getModeFromExtension(ext: string): string | undefined {
         case 'osm':
         case 'pkgproj':
         case 'plist':
-        case 'pluginspec':
+        // case 'pluginspec':
         case 'props':
         case 'ps1xml':
         case 'psc1':
@@ -460,7 +494,7 @@ function getModeFromExtension(ext: string): string | undefined {
         case 'rdf':
         case 'resx':
         case 'rss':
-        case 'sch':
+        // case 'sch':
         case 'scxml':
         case 'sfproj':
         case 'srdf':
@@ -474,8 +508,8 @@ function getModeFromExtension(ext: string): string | undefined {
         case 'tmPreferences':
         case 'tmSnippet':
         case 'tmTheme':
-        case 'ts':
-        case 'tsx':
+        // case 'ts':
+        // case 'tsx':
         case 'ui':
         case 'urdf':
         case 'ux':

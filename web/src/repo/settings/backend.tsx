@@ -15,8 +15,8 @@ export function fetchRepository(name: string): Observable<GQL.IRepository> {
                 repository(name: $name) {
                     id
                     name
+                    isPrivate
                     viewerCanAdminister
-                    enabled
                     mirrorInfo {
                         remoteURL
                         cloneInProgress
@@ -34,13 +34,24 @@ export function fetchRepository(name: string): Observable<GQL.IRepository> {
                             total
                         }
                     }
+                    externalServices {
+                        nodes {
+                            id
+                            kind
+                            displayName
+                        }
+                    }
+                    permissionsInfo {
+                        syncedAt
+                        updatedAt
+                    }
                 }
             }
         `,
         { name }
     ).pipe(
         map(({ data, errors }) => {
-            if (!data || !data.repository) {
+            if (!data || !data.repository || !data.repository.externalServices) {
                 throw createAggregateError(errors)
             }
             return data.repository

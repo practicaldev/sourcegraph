@@ -4,7 +4,7 @@ import {
     EXTENSION_CATEGORIES,
     ExtensionCategory,
     ExtensionManifest,
-} from '../../../../shared/src/schema/extension.schema'
+} from '../../../../shared/src/schema/extensionSchema'
 import { Settings } from '../../../../shared/src/settings/settings'
 import { ErrorLike, isErrorLike } from '../../../../shared/src/util/errors'
 import { quoteIfNeeded } from '../../search'
@@ -18,7 +18,8 @@ export const EXTENSION_NAME_MAX_LENGTH = 128
 /** A useful minimal type for a registry extension's publisher. */
 export type RegistryPublisher = (
     | Pick<GQL.IUser, '__typename' | 'id' | 'username'>
-    | Pick<GQL.IOrg, '__typename' | 'id' | 'name'>) & {
+    | Pick<GQL.IOrg, '__typename' | 'id' | 'name'>
+) & {
     /** The prefix for extension IDs published by this publisher (with the registry's host), if any. */
     extensionIDPrefix?: string
 }

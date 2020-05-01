@@ -1,0 +1,360 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`StatusMessagesNavItem no messages 1`] = `
+<div
+  className="nav-link py-0 px-0 status-messages-nav-item__nav-link btn-group"
+  onKeyDown={[Function]}
+>
+  <a
+    aria-expanded={false}
+    aria-haspopup={true}
+    className="btn btn-link nav-link"
+    href="#"
+    onClick={[Function]}
+  >
+    <CloudCheckIcon
+      className="icon-inline"
+      data-tooltip="Repositories up to date"
+    />
+  </a>
+  <div
+    aria-hidden={true}
+    className="status-messages-nav-item__dropdown-menu dropdown-menu dropdown-menu-right"
+    role="menu"
+    tabIndex="-1"
+  >
+    <h3>
+      Code host status
+    </h3>
+    <div
+      className="status-messages-nav-item__dropdown-menu-content"
+    >
+      <div
+        className="status-messages-nav-item__entry mb-3 status-messages-nav-item__entry--border-success"
+      >
+        <h4>
+          <CloudCheckIcon
+            className="icon-inline mr-1"
+          />
+          Repositories up to date
+        </h4>
+        <p>
+          All repositories hosted on the configured code hosts are synced.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`StatusMessagesNavItem one CloningProgress message as non-site admin 1`] = `
+<div
+  className="nav-link py-0 px-0 status-messages-nav-item__nav-link btn-group"
+  onKeyDown={[Function]}
+>
+  <a
+    aria-expanded={false}
+    aria-haspopup={true}
+    className="btn btn-link nav-link"
+    href="#"
+    onClick={[Function]}
+  >
+    <CloudSyncIcon
+      className="icon-inline"
+      data-tooltip="Cloning repositories..."
+    />
+  </a>
+  <div
+    aria-hidden={true}
+    className="status-messages-nav-item__dropdown-menu dropdown-menu dropdown-menu-right"
+    role="menu"
+    tabIndex="-1"
+  >
+    <h3>
+      Code host status
+    </h3>
+    <div
+      className="status-messages-nav-item__dropdown-menu-content"
+    >
+      <div
+        className="status-messages-nav-item__entry mb-3 status-messages-nav-item__entry--border-progress"
+      >
+        <h4>
+          <CloudSyncIcon
+            className="icon-inline mr-1"
+          />
+          Repositories cloning
+        </h4>
+        <p>
+          Currently cloning repositories...
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`StatusMessagesNavItem one CloningProgress message as site admin 1`] = `
+<div
+  className="nav-link py-0 px-0 status-messages-nav-item__nav-link btn-group"
+  onKeyDown={[Function]}
+>
+  <a
+    aria-expanded={false}
+    aria-haspopup={true}
+    className="btn btn-link nav-link"
+    href="#"
+    onClick={[Function]}
+  >
+    <CloudSyncIcon
+      className="icon-inline"
+      data-tooltip="Cloning repositories..."
+    />
+  </a>
+  <div
+    aria-hidden={true}
+    className="status-messages-nav-item__dropdown-menu dropdown-menu dropdown-menu-right"
+    role="menu"
+    tabIndex="-1"
+  >
+    <h3>
+      Code host status
+    </h3>
+    <div
+      className="status-messages-nav-item__dropdown-menu-content"
+    >
+      <div
+        className="status-messages-nav-item__entry mb-3 status-messages-nav-item__entry--border-progress"
+      >
+        <h4>
+          <CloudSyncIcon
+            className="icon-inline mr-1"
+          />
+          Repositories cloning
+        </h4>
+        <p>
+          Currently cloning repositories...
+        </p>
+        <p
+          className="status-messages-nav-item__entry-link"
+        >
+          <a
+            href="/site-admin/external-services"
+            onClick={[Function]}
+          >
+            Configure synced repositories
+          </a>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`StatusMessagesNavItem one ExternalServiceSyncError message as non-site admin 1`] = `
+<div
+  className="nav-link py-0 px-0 status-messages-nav-item__nav-link btn-group"
+  onKeyDown={[Function]}
+>
+  <a
+    aria-expanded={false}
+    aria-haspopup={true}
+    className="btn btn-link nav-link"
+    href="#"
+    onClick={[Function]}
+  >
+    <CloudAlertIcon
+      className="icon-inline"
+      data-tooltip="Syncing repositories failed!"
+    />
+  </a>
+  <div
+    aria-hidden={true}
+    className="status-messages-nav-item__dropdown-menu dropdown-menu dropdown-menu-right"
+    role="menu"
+    tabIndex="-1"
+  >
+    <h3>
+      Code host status
+    </h3>
+    <div
+      className="status-messages-nav-item__dropdown-menu-content"
+    >
+      <div
+        className="status-messages-nav-item__entry mb-3 status-messages-nav-item__entry--border-warning"
+      >
+        <h4>
+          <CloudAlertIcon
+            className="icon-inline mr-1"
+          />
+          Syncing repositories from external service "GitHub.com" failed:
+        </h4>
+        <p>
+          failed to list organization kubernetes repos: request returned status 404: Not Found
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`StatusMessagesNavItem one ExternalServiceSyncError message as site admin 1`] = `
+<div
+  className="nav-link py-0 px-0 status-messages-nav-item__nav-link btn-group"
+  onKeyDown={[Function]}
+>
+  <a
+    aria-expanded={false}
+    aria-haspopup={true}
+    className="btn btn-link nav-link"
+    href="#"
+    onClick={[Function]}
+  >
+    <CloudAlertIcon
+      className="icon-inline"
+      data-tooltip="Syncing repositories failed!"
+    />
+  </a>
+  <div
+    aria-hidden={true}
+    className="status-messages-nav-item__dropdown-menu dropdown-menu dropdown-menu-right"
+    role="menu"
+    tabIndex="-1"
+  >
+    <h3>
+      Code host status
+    </h3>
+    <div
+      className="status-messages-nav-item__dropdown-menu-content"
+    >
+      <div
+        className="status-messages-nav-item__entry mb-3 status-messages-nav-item__entry--border-warning"
+      >
+        <h4>
+          <CloudAlertIcon
+            className="icon-inline mr-1"
+          />
+          Syncing repositories from external service "GitHub.com" failed:
+        </h4>
+        <p>
+          failed to list organization kubernetes repos: request returned status 404: Not Found
+        </p>
+        <p
+          className="status-messages-nav-item__entry-link"
+        >
+          <a
+            href="/site-admin/external-services/abcd"
+            onClick={[Function]}
+          >
+            Edit "GitHub.com"
+          </a>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`StatusMessagesNavItem one SyncError message as non-site admin 1`] = `
+<div
+  className="nav-link py-0 px-0 status-messages-nav-item__nav-link btn-group"
+  onKeyDown={[Function]}
+>
+  <a
+    aria-expanded={false}
+    aria-haspopup={true}
+    className="btn btn-link nav-link"
+    href="#"
+    onClick={[Function]}
+  >
+    <CloudCheckIcon
+      className="icon-inline"
+      data-tooltip="Repositories up to date"
+    />
+  </a>
+  <div
+    aria-hidden={true}
+    className="status-messages-nav-item__dropdown-menu dropdown-menu dropdown-menu-right"
+    role="menu"
+    tabIndex="-1"
+  >
+    <h3>
+      Code host status
+    </h3>
+    <div
+      className="status-messages-nav-item__dropdown-menu-content"
+    >
+      <div
+        className="status-messages-nav-item__entry mb-3 status-messages-nav-item__entry--border-warning"
+      >
+        <h4>
+          <CloudAlertIcon
+            className="icon-inline mr-1"
+          />
+          Syncing repositories failed:
+        </h4>
+        <p>
+          syncer.sync.store.upsert-repos: pg: unique constraint foobar
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`StatusMessagesNavItem one SyncError message as site admin 1`] = `
+<div
+  className="nav-link py-0 px-0 status-messages-nav-item__nav-link btn-group"
+  onKeyDown={[Function]}
+>
+  <a
+    aria-expanded={false}
+    aria-haspopup={true}
+    className="btn btn-link nav-link"
+    href="#"
+    onClick={[Function]}
+  >
+    <CloudCheckIcon
+      className="icon-inline"
+      data-tooltip="Repositories up to date"
+    />
+  </a>
+  <div
+    aria-hidden={true}
+    className="status-messages-nav-item__dropdown-menu dropdown-menu dropdown-menu-right"
+    role="menu"
+    tabIndex="-1"
+  >
+    <h3>
+      Code host status
+    </h3>
+    <div
+      className="status-messages-nav-item__dropdown-menu-content"
+    >
+      <div
+        className="status-messages-nav-item__entry mb-3 status-messages-nav-item__entry--border-warning"
+      >
+        <h4>
+          <CloudAlertIcon
+            className="icon-inline mr-1"
+          />
+          Syncing repositories failed:
+        </h4>
+        <p>
+          syncer.sync.store.upsert-repos: pg: unique constraint foobar
+        </p>
+        <p
+          className="status-messages-nav-item__entry-link"
+        >
+          <a
+            href="/site-admin/external-services"
+            onClick={[Function]}
+          >
+            Configure synced repositories
+          </a>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+`;

@@ -1,10 +1,9 @@
-@import '../node_modules/@sourcegraph/react-loading-spinner/lib/LoadingSpinner.css';
+@import '~@sourcegraph/react-loading-spinner/lib/LoadingSpinner.css';
 
 .hover-overlay {
     position: absolute;
     min-width: 6rem;
     max-width: 32rem;
-    max-height: 15rem;
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -15,36 +14,63 @@
 
     &__close-button {
         position: absolute;
-        top: 0;
-        right: 0;
+        top: 1px;
+        right: 1px;
         padding: 0.25rem;
-        border-radius: 0;
+        border-radius: 100%;
         background: transparent;
         z-index: 1;
         border: none;
+        background-color: rgba($body-bg-color-dark, 0.8);
         opacity: 0;
         transition: opacity $animation-duration ease-in-out;
-        &:focus {
-            outline: none; // override GitHub style
-        }
-        &:active {
-            box-shadow: none; // override GitHub style
-        }
     }
     &:hover &__close-button {
         opacity: 1;
     }
 
     &__row {
+        position: relative;
         display: block;
-        width: 100%;
         margin: 0;
         &:not(:first-child) {
             border-top: 1px solid var(--border-color);
         }
+    }
+
+    &__contents {
+        flex: 1 1 auto;
+        overflow-y: auto;
+    }
+
+    &__alert {
+        border-top: 1px solid var(--border-color);
+        padding: 0.5rem;
+    }
+
+    &__alert-close {
+        float: right;
+    }
+
+    // __content elements are a subset of the __row elements
+    // (the ones that contain markdown or code, but not errors or the actions)
+    &__content {
+        max-height: 15rem;
+        padding: 0.5rem;
+        overflow-x: auto;
+        word-wrap: normal;
+
+        // Descendant selectors are needed here to style rendered markdown
+        // stylelint-disable selector-max-compound-selectors
+
+        // <hr>s must looks the same as using the using multiple deprecated MarkedStrings
         hr {
             margin: 0.5rem -0.5rem;
             background: var(--border-color);
+            border: none;
+            // The <hr> acts like a border, which should always be exactly 1px
+            // stylelint-disable-next-line declaration-property-unit-whitelist
+            height: 1px;
         }
         p,
         pre {
@@ -54,20 +80,21 @@
                 margin-bottom: 0;
             }
         }
-    }
-
-    &__contents {
-        flex: 1 1 auto;
-        overflow-y: auto;
-    }
-
-    &__content {
-        padding: 0.5rem;
-        overflow-x: auto;
-        word-wrap: normal;
-        p:last-child {
-            margin-bottom: 0;
+        code {
+            white-space: pre;
         }
+        // stylelint-enable selector-max-compound-selectors
+    }
+
+    &__badge {
+        position: absolute;
+        top: 1px;
+        right: 1px;
+        width: 100%;
+        text-align: right;
+    }
+    &:hover &__badge--offset {
+        right: 1.5rem;
     }
 
     &__actions {
@@ -105,8 +132,12 @@
         margin: 0;
         overflow-y: auto;
     }
+}
 
-    code {
-        white-space: pre;
+.theme-light {
+    .hover-overlay {
+        &__close-button {
+            background-color: rgba($body-bg-color-light, 0.8);
+        }
     }
 }

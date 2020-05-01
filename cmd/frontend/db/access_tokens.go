@@ -11,7 +11,7 @@ import (
 	"github.com/keegancsmith/sqlf"
 	"github.com/lib/pq"
 	"github.com/pkg/errors"
-	"github.com/sourcegraph/sourcegraph/pkg/db/dbconn"
+	"github.com/sourcegraph/sourcegraph/internal/db/dbconn"
 )
 
 // AccessToken describes an access token. The actual token (that a caller must supply to
@@ -113,12 +113,13 @@ func (s *accessTokens) Lookup(ctx context.Context, tokenHexEncoded string, requi
 		// Ensure that subject and creator users still exist.
 		`
 UPDATE access_tokens t SET last_used_at=now()
-FROM access_tokens t2
-JOIN users subject_user ON t2.subject_user_id=subject_user.id
-JOIN users creator_user ON t2.creator_user_id=creator_user.id
-WHERE t.value_sha256=$1 AND t.deleted_at IS NULL AND
-  subject_user.deleted_at IS NULL AND creator_user.deleted_at IS NULL AND
-  $2 = ANY (t.scopes)
+WHERE t.id IN (
+	SELECT t2.id FROM access_tokens t2
+	JOIN users subject_user ON t2.subject_user_id=subject_user.id AND subject_user.deleted_at IS NULL
+	JOIN users creator_user ON t2.creator_user_id=creator_user.id AND creator_user.deleted_at IS NULL
+	WHERE t2.value_sha256=$1 AND t2.deleted_at IS NULL AND
+	$2 = ANY (t2.scopes)
+)
 RETURNING t.subject_user_id
 `,
 		toSHA256Bytes(token), requiredScope,
@@ -151,7 +152,9 @@ func (s *accessTokens) GetByID(ctx context.Context, id int64) (*AccessToken, err
 
 // AccessTokensListOptions contains options for listing access tokens.
 type AccessTokensListOptions struct {
-	SubjectUserID int32 // only list access tokens with this user as the subject
+	SubjectUserID  int32 // only list access tokens with this user as the subject
+	LastUsedAfter  *time.Time
+	LastUsedBefore *time.Time
 	*LimitOffset
 }
 
@@ -159,6 +162,12 @@ func (o AccessTokensListOptions) sqlConditions() []*sqlf.Query {
 	conds := []*sqlf.Query{sqlf.Sprintf("deleted_at IS NULL")}
 	if o.SubjectUserID != 0 {
 		conds = append(conds, sqlf.Sprintf("subject_user_id=%d", o.SubjectUserID))
+	}
+	if o.LastUsedAfter != nil {
+		conds = append(conds, sqlf.Sprintf("last_used_at>%d", o.LastUsedAfter))
+	}
+	if o.LastUsedBefore != nil {
+		conds = append(conds, sqlf.Sprintf("last_used_at<%d", o.LastUsedBefore))
 	}
 	return conds
 }

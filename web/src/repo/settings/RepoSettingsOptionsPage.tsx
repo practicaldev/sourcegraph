@@ -1,21 +1,23 @@
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import { upperFirst } from 'lodash'
 import * as React from 'react'
 import { RouteComponentProps } from 'react-router'
 import { Subject, Subscription } from 'rxjs'
 import { switchMap } from 'rxjs/operators'
-import { REPO_DELETE_CONFIRMATION_MESSAGE } from '.'
 import * as GQL from '../../../../shared/src/graphql/schema'
+import { ExternalServiceCard } from '../../components/ExternalServiceCard'
 import { Form } from '../../components/Form'
 import { PageTitle } from '../../components/PageTitle'
-import { deleteRepository, setRepositoryEnabled } from '../../site-admin/backend'
 import { eventLogger } from '../../tracking/eventLogger'
 import { fetchRepository } from './backend'
-import { ActionContainer } from './components/ActionContainer'
+import { ErrorAlert } from '../../components/alerts'
+import { defaultExternalServices } from '../../site-admin/externalServices'
+import { asError } from '../../../../shared/src/util/errors'
+import * as H from 'history'
 
-interface Props extends RouteComponentProps<any> {
+interface Props extends RouteComponentProps<{}> {
     repo: GQL.IRepository
     onDidUpdateRepository: (update: Partial<GQL.IRepository>) => void
+    history: H.History
 }
 
 interface State {
@@ -48,9 +50,10 @@ export class RepoSettingsOptionsPage extends React.PureComponent<Props, State> {
         eventLogger.logViewEvent('RepoSettings')
 
         this.subscriptions.add(
-            this.repoUpdates
-                .pipe(switchMap(() => fetchRepository(this.props.repo.name)))
-                .subscribe(repo => this.setState({ repo }), err => this.setState({ error: err.message }))
+            this.repoUpdates.pipe(switchMap(() => fetchRepository(this.props.repo.name))).subscribe(
+                repo => this.setState({ repo }),
+                err => this.setState({ error: asError(err).message })
+            )
         )
     }
 
@@ -59,12 +62,34 @@ export class RepoSettingsOptionsPage extends React.PureComponent<Props, State> {
     }
 
     public render(): JSX.Element | null {
+        const services = this.state.repo.externalServices.nodes
         return (
             <div className="repo-settings-options-page">
                 <PageTitle title="Repository settings" />
                 <h2>Settings</h2>
                 {this.state.loading && <LoadingSpinner className="icon-inline" />}
-                {this.state.error && <div className="alert alert-danger">{upperFirst(this.state.error)}</div>}
+                {this.state.error && <ErrorAlert error={this.state.error} history={this.props.history} />}
+                {services.length > 0 && (
+                    <div className="mb-4">
+                        {services.map(service => (
+                            <div className="mb-3" key={service.id}>
+                                <ExternalServiceCard
+                                    {...defaultExternalServices[service.kind]}
+                                    kind={service.kind}
+                                    title={service.displayName}
+                                    shortDescription="Update this external service configuration to manage repository mirroring."
+                                    to={`/site-admin/external-services/${service.id}`}
+                                />
+                            </div>
+                        ))}
+                        {services.length > 1 && (
+                            <p>
+                                This repository is mirrored by multiple external services. To change access, disable, or
+                                remove this repository, the configuration must be updated on all external services.
+                            </p>
+                        )}
+                    </div>
+                )}
                 <Form>
                     <div className="form-group">
                         <label htmlFor="repo-settings-options-page__name">Repository name</label>
@@ -83,54 +108,7 @@ export class RepoSettingsOptionsPage extends React.PureComponent<Props, State> {
                         />
                     </div>
                 </Form>
-                <ActionContainer
-                    title={this.state.repo.enabled ? 'Disable access' : 'Enable access'}
-                    description={
-                        this.state.repo.enabled
-                            ? 'Disable access to the repository to prevent users from searching and browsing the repository.'
-                            : 'The repository is disabled. Enable it to allow users to search and view the repository.'
-                    }
-                    buttonClassName={this.state.repo.enabled ? 'btn-danger' : 'btn-success'}
-                    buttonLabel={this.state.repo.enabled ? 'Disable access' : 'Enable access'}
-                    flashText="Updated"
-                    run={this.state.repo.enabled ? this.disableRepository : this.enableRepository}
-                />
-                <ActionContainer
-                    title="Delete repository"
-                    description="Permanently removes this repository and all associated data from Sourcegraph. The original repository on the code host is not affected. If this repository was added by a configured code host, then it will be re-added during the next sync."
-                    buttonClassName="btn-danger"
-                    buttonLabel="Delete this repository"
-                    run={this.deleteRepository}
-                />
             </div>
         )
-    }
-
-    private enableRepository = () =>
-        setRepositoryEnabled(this.state.repo.id, true)
-            .toPromise()
-            .then(() => {
-                this.repoUpdates.next()
-                this.props.onDidUpdateRepository({ enabled: true })
-            })
-    private disableRepository = () =>
-        setRepositoryEnabled(this.state.repo.id, false)
-            .toPromise()
-            .then(() => {
-                this.repoUpdates.next()
-                this.props.onDidUpdateRepository({ enabled: false })
-            })
-
-    private deleteRepository = () => {
-        if (!window.confirm(REPO_DELETE_CONFIRMATION_MESSAGE)) {
-            return Promise.resolve()
-        }
-
-        return deleteRepository(this.state.repo.id)
-            .toPromise()
-            .then(() => {
-                this.repoUpdates.next()
-                this.props.history.push('/site-admin/repositories')
-            })
     }
 }

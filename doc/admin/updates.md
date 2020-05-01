@@ -1,9 +1,5 @@
 # Upgrading Sourcegraph
 
-## Upgrading to 3.0.1+
-
-Read our [migration guide](migration/3_0.md) for `2.x` and `3.0.0`.
-
 ## For single-node deployments (`sourcegraph/server`)
 
 A new version of Sourcegraph is released every month (with patch releases in between, released as needed). Check the [Sourcegraph blog](https://about.sourcegraph.com/blog) or the site admin updates page to learn about updates.
@@ -19,3 +15,11 @@ You can always find the version number of the latest release at [docs.sourcegrap
 ## For Kubernetes cluster deployments
 
 See "[Updating Sourcegraph](https://github.com/sourcegraph/deploy-sourcegraph/blob/master/docs/update.md)" in the Kubernetes cluster administrator guide.
+
+## For Docker Compose deployments
+
+Please see: [updating a Docker Compose Sourcegraph instance](updates/docker_compose.md)
+
+## For pure-Docker cluster deployments
+
+Please see: [updating a pure-Docker Sourcegraph cluster](updates/pure_docker.md)

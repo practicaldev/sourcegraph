@@ -15,8 +15,10 @@ import { FilteredConnection } from '../components/FilteredConnection'
 import { PageTitle } from '../components/PageTitle'
 import { eventLogger } from '../tracking/eventLogger'
 import { userURL } from '../user'
-import { setUserEmailVerified } from '../user/account/backend'
+import { setUserEmailVerified } from '../user/settings/backend'
 import { deleteUser, fetchAllUsers, randomizeUserPassword, setUserIsSiteAdmin } from './backend'
+import { ErrorAlert } from '../components/alerts'
+import * as H from 'history'
 
 interface UserNodeProps {
     /**
@@ -33,6 +35,7 @@ interface UserNodeProps {
      * Called when the user is updated by an action in this list item.
      */
     onDidUpdate?: () => void
+    history: H.History
 }
 
 interface UserNodeState {
@@ -111,6 +114,7 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                         </Link>{' '}
                         {window.context.resetPasswordEnabled && (
                             <button
+                                type="button"
                                 className="btn btn-sm btn-secondary"
                                 onClick={this.randomizePassword}
                                 disabled={this.state.loading || !!this.state.resetPasswordURL}
@@ -121,6 +125,7 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                         {this.props.node.id !== this.props.authenticatedUser.id &&
                             (this.props.node.siteAdmin ? (
                                 <button
+                                    type="button"
                                     className="btn btn-sm btn-secondary"
                                     onClick={this.demoteFromSiteAdmin}
                                     disabled={this.state.loading}
@@ -129,6 +134,7 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                                 </button>
                             ) : (
                                 <button
+                                    type="button"
                                     key="promote"
                                     className="btn btn-sm btn-secondary"
                                     onClick={this.promoteToSiteAdmin}
@@ -139,6 +145,7 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                             ))}{' '}
                         {this.props.node.id !== this.props.authenticatedUser.id && (
                             <button
+                                type="button"
                                 className="btn btn-sm btn-danger"
                                 onClick={this.deleteUser}
                                 disabled={this.state.loading}
@@ -149,6 +156,7 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                         )}
                         {this.props.node.id !== this.props.authenticatedUser.id && (
                             <button
+                                type="button"
                                 className="ml-1 btn btn-sm btn-danger"
                                 onClick={this.nukeUser}
                                 disabled={this.state.loading}
@@ -160,7 +168,7 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                     </div>
                 </div>
                 {this.state.errorDescription && (
-                    <div className="alert alert-danger mt-2">{this.state.errorDescription}</div>
+                    <ErrorAlert className="mt-2" error={this.state.errorDescription} history={this.props.history} />
                 )}
                 {this.state.resetPasswordURL && (
                     <div className="alert alert-success mt-2">
@@ -175,8 +183,8 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
         )
     }
 
-    private promoteToSiteAdmin = () => this.setSiteAdmin(true)
-    private demoteFromSiteAdmin = () => this.setSiteAdmin(false)
+    private promoteToSiteAdmin = (): void => this.setSiteAdmin(true)
+    private demoteFromSiteAdmin = (): void => this.setSiteAdmin(false)
 
     private setSiteAdmin(siteAdmin: boolean): void {
         if (
@@ -203,16 +211,14 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                         this.props.onDidUpdate()
                     }
                 },
-                err => this.setState({ loading: false, errorDescription: err.message })
+                err => this.setState({ loading: false, errorDescription: asError(err).message })
             )
     }
 
-    private randomizePassword = () => {
+    private randomizePassword = (): void => {
         if (
             !window.confirm(
-                `Reset the password for ${
-                    this.props.node.username
-                } to a random password? The user must reset their password to sign in again.`
+                `Reset the password for ${this.props.node.username} to a random password? The user must reset their password to sign in again.`
             )
         ) {
             return
@@ -233,14 +239,14 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                         resetPasswordURL,
                     })
                 },
-                err => this.setState({ loading: false, errorDescription: err.message })
+                err => this.setState({ loading: false, errorDescription: asError(err).message })
             )
     }
 
-    private deleteUser = () => this.doDeleteUser(false)
-    private nukeUser = () => this.doDeleteUser(true)
+    private deleteUser = (): void => this.doDeleteUser(false)
+    private nukeUser = (): void => this.doDeleteUser(true)
 
-    private doDeleteUser = (hard: boolean) => {
+    private doDeleteUser = (hard: boolean): void => {
         let message = `Delete the user ${this.props.node.username}?`
         if (hard) {
             message = `Nuke the user ${this.props.node.username}?${nukeDetails}`
@@ -264,24 +270,20 @@ class UserNode extends React.PureComponent<UserNodeProps, UserNodeState> {
                         this.props.onDidUpdate()
                     }
                 },
-                err => this.setState({ loading: false, errorDescription: err.message })
+                err => this.setState({ loading: false, errorDescription: asError(err).message })
             )
     }
 }
 
-interface Props extends RouteComponentProps<any> {
+interface Props extends RouteComponentProps<{}> {
     authenticatedUser: GQL.IUser
+    history: H.History
 }
 
 interface State {
     users?: GQL.IUser[]
     totalCount?: number
 }
-
-class FilteredUserConnection extends FilteredConnection<
-    GQL.IUser,
-    Pick<UserNodeProps, 'authenticatedUser' | 'onDidUpdate'>
-> {}
 
 /**
  * A page displaying the users on this site.
@@ -301,15 +303,16 @@ export class SiteAdminAllUsersPage extends React.Component<Props, State> {
     }
 
     public render(): JSX.Element | null {
-        const nodeProps: Pick<UserNodeProps, 'authenticatedUser' | 'onDidUpdate'> = {
+        const nodeProps: Omit<UserNodeProps, 'node'> = {
             authenticatedUser: this.props.authenticatedUser,
             onDidUpdate: this.onDidUpdateUser,
+            history: this.props.history,
         }
 
         return (
             <div className="site-admin-all-users-page">
                 <PageTitle title="Users - Admin" />
-                <div className="d-flex justify-content-between align-items-center mt-3 mb-3">
+                <div className="d-flex justify-content-between align-items-center mb-3">
                     <h2 className="mb-0">Users</h2>
                     <div>
                         <Link to="/site-admin/users/new" className="btn btn-primary">
@@ -317,7 +320,7 @@ export class SiteAdminAllUsersPage extends React.Component<Props, State> {
                         </Link>
                     </div>
                 </div>
-                <FilteredUserConnection
+                <FilteredConnection<GQL.IUser, Omit<UserNodeProps, 'node'>>
                     className="list-group list-group-flush mt-3"
                     noun="user"
                     pluralNoun="users"
@@ -332,5 +335,5 @@ export class SiteAdminAllUsersPage extends React.Component<Props, State> {
         )
     }
 
-    private onDidUpdateUser = () => this.userUpdates.next()
+    private onDidUpdateUser = (): void => this.userUpdates.next()
 }

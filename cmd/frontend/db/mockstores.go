@@ -10,12 +10,13 @@ type MockStores struct {
 	DiscussionComments        MockDiscussionComments
 	DiscussionMailReplyTokens MockDiscussionMailReplyTokens
 
-	Repos      MockRepos
-	Orgs       MockOrgs
-	OrgMembers MockOrgMembers
-	Settings   MockSettings
-	Users      MockUsers
-	UserEmails MockUserEmails
+	Repos         MockRepos
+	Orgs          MockOrgs
+	OrgMembers    MockOrgMembers
+	SavedSearches MockSavedSearches
+	Settings      MockSettings
+	Users         MockUsers
+	UserEmails    MockUserEmails
 
 	Phabricator MockPhabricator
 
@@ -24,4 +25,6 @@ type MockStores struct {
 	OrgInvitations MockOrgInvitations
 
 	ExternalServices MockExternalServices
+
+	Authz MockAuthz
 }

@@ -1,18 +1,30 @@
 #!/bin/bash
 
-cd $(dirname "${BASH_SOURCE[0]}")/../migrations
+cd "$(dirname "${BASH_SOURCE[0]}")"/../migrations
 set -e
 
-# The name is intentionally empty ('') so that it forces a merge conflict if two branches attempt to
-# create a migration at the same sequence number (because they will both add a file with the same
-# name, like `migrations/1528277032_.up.sql`).
+if [ -z "$1" ]; then
+  echo "USAGE: $0 <name>"
+  exit 1
+fi
 
-migrate create -ext sql -dir . -digits 10 -seq ''
+# This simulates what "migrate create -ext sql -digits 10 -seq" does.
+awkcmd=$(
+  cat <<-EOF
+BEGIN { FS="[_/]" }
+{ n=\$2 }
+END {
+    gsub(/[^A-Za-z0-9]/, "_", name);
+    printf("%s_%s.up.sql\n",   n + 1, name);
+    printf("%s_%s.down.sql\n", n + 1, name);
+}
+EOF
+)
 
-files=$(ls -1 | grep '^[0-9]'.*\.sql | sort -n | tail -n2)
+files=$(find -s . -type f -name '[0-9]*.sql' | awk -v name="$1" "$awkcmd")
 
 for f in $files; do
-    cat > $f <<EOF
+  cat >"$f" <<EOF
 BEGIN;
 
 -- Insert migration here. See README.md. Highlights:
@@ -24,6 +36,6 @@ BEGIN;
 
 COMMIT;
 EOF
-   
-    echo "Created migrations/$f"
+
+  echo "Created migrations/$f"
 done

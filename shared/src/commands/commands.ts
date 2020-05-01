@@ -1,10 +1,10 @@
 import { Position } from '@sourcegraph/extension-api-types'
-import { isArray } from 'lodash'
 import { concat, from, of, Subscription, Unsubscribable } from 'rxjs'
 import { first } from 'rxjs/operators'
 import { Services } from '../api/client/services'
 import { KeyPath, SettingsEdit } from '../api/client/services/settings'
-import { ActionContributionClientCommandUpdateConfiguration } from '../api/protocol'
+import { ActionContributionClientCommandUpdateConfiguration, Evaluated } from '../api/protocol'
+import { gql } from '../graphql/graphql'
 import { PlatformContext } from '../platform/context'
 
 /**
@@ -14,7 +14,7 @@ import { PlatformContext } from '../platform/context'
  */
 export function registerBuiltinClientCommands(
     { settings: settingsService, commands: commandRegistry, textDocumentLocations }: Services,
-    context: Pick<PlatformContext, 'queryGraphQL'>
+    context: Pick<PlatformContext, 'requestGraphQL' | 'telemetryService'>
 ): Unsubscribable {
     const subscription = new Subscription()
 
@@ -68,7 +68,9 @@ export function registerBuiltinClientCommands(
         commandRegistry.registerCommand({
             command: 'updateConfiguration',
             run: (...anyArgs: any[]): Promise<void> => {
-                const args = anyArgs as ActionContributionClientCommandUpdateConfiguration['commandArguments']
+                const args = anyArgs as Evaluated<
+                    ActionContributionClientCommandUpdateConfiguration
+                >['commandArguments']
                 return settingsService.update(convertUpdateConfigurationCommandArgs(args))
             },
         })
@@ -87,7 +89,30 @@ export function registerBuiltinClientCommands(
                 // is set to `true`. It is up to the client (e.g. browser
                 // extension) to check that parameter and prevent the request
                 // from being sent to Sourcegraph.com.
-                from(context.queryGraphQL(query, variables, true)).toPromise(),
+                from(
+                    context.requestGraphQL({
+                        request: gql`
+                            ${query}
+                        `,
+                        variables,
+                        mightContainPrivateInfo: true,
+                    })
+                ).toPromise(),
+        })
+    )
+
+    /**
+     * Sends a telemetry event to the Sourcegraph instance with the correct anonymous user id.
+     */
+    subscription.add(
+        commandRegistry.registerCommand({
+            command: 'logTelemetryEvent',
+            run: (eventName: string, eventProperties?: any): Promise<any> => {
+                if (context.telemetryService) {
+                    context.telemetryService.log(eventName, eventProperties)
+                }
+                return Promise.resolve()
+            },
         })
     )
 
@@ -107,10 +132,7 @@ export function urlForOpenPanel(viewID: string, urlHash: string): string {
     params.set('tab', viewID)
     // In the URL fragment, the 'L1:2-3:4' is treated as a parameter with no value. Undo the escaping of ':'
     // and the addition of the '=' for the empty value, for aesthetic reasons.
-    const paramsString = params
-        .toString()
-        .replace(/%3A/g, ':')
-        .replace(/=&/g, '&')
+    const paramsString = params.toString().replace(/%3A/g, ':').replace(/=&/g, '&')
     return `#${paramsString}`
 }
 
@@ -120,9 +142,9 @@ export function urlForOpenPanel(viewID: string, urlHash: string): string {
  * to {@link SettingsUpdate}.
  */
 export function convertUpdateConfigurationCommandArgs(
-    args: ActionContributionClientCommandUpdateConfiguration['commandArguments']
+    args: Evaluated<ActionContributionClientCommandUpdateConfiguration>['commandArguments']
 ): SettingsEdit {
-    if (!isArray(args) || !(args.length >= 2 && args.length <= 4)) {
+    if (!Array.isArray(args) || !(args.length >= 2 && args.length <= 4)) {
         throw new Error(
             `invalid updateConfiguration arguments: ${JSON.stringify(
                 args
@@ -131,7 +153,7 @@ export function convertUpdateConfigurationCommandArgs(
     }
 
     let keyPath: KeyPath
-    if (isArray(args[0])) {
+    if (Array.isArray(args[0])) {
         keyPath = args[0]
     } else if (typeof args[0] === 'string') {
         // For convenience, allow the 1st arg (the key path) to be a string, and interpret this as referring to the
@@ -149,6 +171,5 @@ export function convertUpdateConfigurationCommandArgs(
         throw new Error(`invalid updateConfiguration arguments: ${JSON.stringify(args)} (3rd element must be null)`)
     }
 
-    const valueIsJSONEncoded = args.length === 4 && args[3] === 'json'
-    return { path: keyPath, value: valueIsJSONEncoded ? JSON.parse(args[1]) : args[1] }
+    return { path: keyPath, value: args.length === 4 && args[3] === 'json' ? JSON.parse(args[1]) : args[1] }
 }

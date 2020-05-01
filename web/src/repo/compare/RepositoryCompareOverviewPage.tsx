@@ -1,17 +1,16 @@
 import { Hoverifier } from '@sourcegraph/codeintellify'
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import { upperFirst } from 'lodash'
 import * as React from 'react'
 import { RouteComponentProps } from 'react-router'
 import { merge, Observable, of, Subject, Subscription } from 'rxjs'
 import { catchError, distinctUntilChanged, map, switchMap } from 'rxjs/operators'
-import { ActionItemProps } from '../../../../shared/src/actions/ActionItem'
+import { ActionItemAction } from '../../../../shared/src/actions/ActionItem'
 import { HoverMerged } from '../../../../shared/src/api/client/types/hover'
 import { ExtensionsControllerProps } from '../../../../shared/src/extensions/controller'
 import { gql } from '../../../../shared/src/graphql/graphql'
 import * as GQL from '../../../../shared/src/graphql/schema'
 import { PlatformContextProps } from '../../../../shared/src/platform/context'
-import { createAggregateError, ErrorLike, isErrorLike } from '../../../../shared/src/util/errors'
+import { asError, createAggregateError, ErrorLike, isErrorLike } from '../../../../shared/src/util/errors'
 import { FileSpec, RepoSpec, ResolvedRevSpec, RevSpec } from '../../../../shared/src/util/url'
 import { queryGraphQL } from '../../backend/graphql'
 import { PageTitle } from '../../components/PageTitle'
@@ -19,6 +18,9 @@ import { eventLogger } from '../../tracking/eventLogger'
 import { RepositoryCompareAreaPageProps } from './RepositoryCompareArea'
 import { RepositoryCompareCommitsPage } from './RepositoryCompareCommitsPage'
 import { RepositoryCompareDiffPage } from './RepositoryCompareDiffPage'
+import { ThemeProps } from '../../../../shared/src/theme'
+import { ErrorAlert } from '../../components/alerts'
+import * as H from 'history'
 
 function queryRepositoryComparison(args: {
     repo: GQL.ID
@@ -77,13 +79,15 @@ interface Props
     extends RepositoryCompareAreaPageProps,
         RouteComponentProps<{}>,
         PlatformContextProps,
-        ExtensionsControllerProps {
+        ExtensionsControllerProps,
+        ThemeProps {
     /** The base of the comparison. */
     base: { repoName: string; repoID: GQL.ID; rev?: string | null }
 
     /** The head of the comparison. */
     head: { repoName: string; repoID: GQL.ID; rev?: string | null }
-    hoverifier: Hoverifier<RepoSpec & RevSpec & FileSpec & ResolvedRevSpec, HoverMerged, ActionItemProps>
+    hoverifier: Hoverifier<RepoSpec & RevSpec & FileSpec & ResolvedRevSpec, HoverMerged, ActionItemAction>
+    history: H.History
 }
 
 interface State {
@@ -108,7 +112,6 @@ export class RepositoryCompareOverviewPage extends React.PureComponent<Props, St
                         (a, b) => a.repo.id === b.repo.id && a.base.rev === b.base.rev && a.head.rev === b.head.rev
                     ),
                     switchMap(({ repo, base, head }) => {
-                        type PartialStateUpdate = Pick<State, 'rangeOrError'>
                         if (!base.rev && !head.rev) {
                             return of({ rangeOrError: null })
                         }
@@ -119,19 +122,22 @@ export class RepositoryCompareOverviewPage extends React.PureComponent<Props, St
                                 base: base.rev || null,
                                 head: head.rev || null,
                             }).pipe(
-                                catchError(error => [error]),
-                                map(c => ({ rangeOrError: c } as PartialStateUpdate))
+                                catchError(error => [asError(error)]),
+                                map((rangeOrError): Pick<State, 'rangeOrError'> => ({ rangeOrError }))
                             )
                         )
                     })
                 )
-                .subscribe(stateUpdate => this.setState(stateUpdate), error => console.error(error))
+                .subscribe(
+                    stateUpdate => this.setState(stateUpdate),
+                    error => console.error(error)
+                )
         )
         this.componentUpdates.next(this.props)
     }
 
-    public componentWillReceiveProps(nextProps: Props): void {
-        this.componentUpdates.next(nextProps)
+    public componentDidUpdate(): void {
+        this.componentUpdates.next(this.props)
     }
 
     public componentWillUnmount(): void {
@@ -147,7 +153,7 @@ export class RepositoryCompareOverviewPage extends React.PureComponent<Props, St
                 ) : this.state.rangeOrError === undefined ? (
                     <LoadingSpinner className="icon-inline" />
                 ) : isErrorLike(this.state.rangeOrError) ? (
-                    <div className="alert alert-danger mt-2">Error: {upperFirst(this.state.rangeOrError.message)}</div>
+                    <ErrorAlert className="mt-2" error={this.state.rangeOrError} history={this.props.history} />
                 ) : (
                     <>
                         <RepositoryCompareCommitsPage {...this.props} />

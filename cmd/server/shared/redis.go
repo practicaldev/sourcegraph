@@ -1,59 +1,150 @@
 package shared
 
 import (
+	"bytes"
+	"errors"
+	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"text/template"
+	"time"
 
 	"github.com/sourcegraph/sourcegraph/cmd/server/shared/assets"
 )
 
-var redisConfTmpl = template.Must(template.New("redis.conf").Parse(assets.MustAssetString("redis.conf.tmpl")))
+var redisStoreConfTmpl = template.Must(template.New("redis-store.conf").Parse(assets.MustAssetString("redis-store.conf.tmpl")))
+var redisCacheConfTmpl = template.Must(template.New("redis-cache.conf").Parse(assets.MustAssetString("redis-cache.conf.tmpl")))
 
-func maybeRedisProcFile() (string, error) {
-	// Redis is already configured. See envvars used in pkg/redispool.
+type redisProcfileConfig struct {
+	envVar  string
+	name    string
+	port    string
+	tmpl    *template.Template
+	dataDir string
+}
+
+func maybeRedisStoreProcFile() (string, error) {
+	return maybeRedisProcFile(redisProcfileConfig{
+		envVar:  "REDIS_STORE_ENDPOINT",
+		name:    "redis-store",
+		port:    "6379",
+		tmpl:    redisStoreConfTmpl,
+		dataDir: "redis",
+	})
+}
+
+func maybeRedisCacheProcFile() (string, error) {
+	return maybeRedisProcFile(redisProcfileConfig{
+		envVar:  "REDIS_CACHE_ENDPOINT",
+		name:    "redis-cache",
+		port:    "6380",
+		tmpl:    redisCacheConfTmpl,
+		dataDir: "redis-cache",
+	})
+}
+
+func maybeRedisProcFile(c redisProcfileConfig) (string, error) {
+	// Redis is already configured. See envvars used in internal/redispool.
 	if os.Getenv("REDIS_ENDPOINT") != "" {
 		return "", nil
 	}
-	store := os.Getenv("REDIS_STORE_ENDPOINT") != ""
-	cache := os.Getenv("REDIS_CACHE_ENDPOINT") != ""
-	if store && cache {
+
+	if os.Getenv(c.envVar) != "" {
 		return "", nil
 	}
 
-	// Create a redis.conf if it doesn't exist
-	path := filepath.Join(os.Getenv("CONFIG_DIR"), "redis.conf")
-	if _, err := os.Stat(path); err != nil {
-		if !os.IsNotExist(err) {
-			return "", err
-		}
-
-		dataDir := filepath.Join(os.Getenv("DATA_DIR"), "redis")
-		err := os.MkdirAll(dataDir, os.FileMode(0755))
-		if err != nil {
-			return "", err
-		}
-
-		f, err := os.Create(path)
-		if err != nil {
-			return "", err
-		}
-
-		err = redisConfTmpl.Execute(f, struct{ Dir string }{
-			Dir: dataDir,
-		})
-		f.Close()
-		if err != nil {
-			os.Remove(path)
-			return "", err
-		}
+	conf, err := tryCreateRedisConf(c)
+	if err != nil {
+		return "", err
 	}
 
-	// Run and use a local redis
-	SetDefaultEnv("REDIS_ENDPOINT", "127.0.0.1:6379")
+	if c.dataDir != "" {
+		redisFixAOF(os.Getenv("DATA_DIR"), c)
+	}
 
+	SetDefaultEnv(c.envVar, "127.0.0.1:"+c.port)
+
+	return redisProcFileEntry(c.name, conf), nil
+}
+
+func tryCreateRedisConf(c redisProcfileConfig) (string, error) {
+	dataDir := filepath.Join(os.Getenv("DATA_DIR"), c.dataDir)
+
+	var b bytes.Buffer
+	err := c.tmpl.Execute(&b, struct{ Dir, Port string }{
+		Dir:  dataDir,
+		Port: c.port,
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	err = os.MkdirAll(dataDir, os.FileMode(0755))
+	if err != nil {
+		return "", err
+	}
+
+	// Always replace redis.conf
+	path := filepath.Join(os.Getenv("CONFIG_DIR"), c.name+".conf")
+	return path, ioutil.WriteFile(path, b.Bytes(), 0644)
+}
+
+func redisProcFileEntry(name, conf string) string {
 	// Redis is noiser than we prefer even at the most quiet setting "warning"
 	// so we only output the last log line when redis stops in case it stopped unexpectly
 	// and the log contains the reason why it stopped.
-	return "redis: redis-server " + path + " | tail -n 1", nil
+	return name + ": redis-server " + conf + " | tail -n 1"
+}
+
+// redisFixAOF does a best-effort repair of the AOF file in case it is
+// corrupted https://github.com/sourcegraph/sourcegraph/issues/651
+func redisFixAOF(rootDataDir string, c redisProcfileConfig) {
+	aofPath := filepath.Join(rootDataDir, c.dataDir, "appendonly.aof")
+	if _, err := os.Stat(aofPath); os.IsNotExist(err) {
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		var output bytes.Buffer
+		e := execer{Out: &output}
+		cmd := exec.Command("redis-check-aof", "--fix", aofPath)
+		cmd.Stdin = &yesReader{Expletive: []byte("y\n")}
+		e.Run(cmd)
+		if err := e.Error(); err != nil {
+			l("Repairing %s appendonly.aof failed:\n%s", c.name, output.String())
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		l("Running redis-check-aof --fix %q...", aofPath)
+		<-done
+		l("Finished running redis-check-aof")
+	}
+}
+
+// yesReader simulates the output of the "yes" command.
+//
+// It is equivalent to bytes.NewReader(bytes.Repeat(Expletive, infinity))
+type yesReader struct {
+	Expletive []byte
+	offset    int
+}
+
+func (r *yesReader) Read(p []byte) (int, error) {
+	if len(r.Expletive) == 0 {
+		return 0, errors.New("yesReader.Expletive is empty")
+	}
+	for n := 0; n < len(p); n++ {
+		p[n] = r.Expletive[r.offset]
+		r.offset++
+		if r.offset == len(r.Expletive) {
+			r.offset = 0
+		}
+	}
+	return len(p), nil
 }

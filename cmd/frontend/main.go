@@ -1,8 +1,8 @@
 package main
 
 import (
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/authz"
 	_ "github.com/sourcegraph/sourcegraph/cmd/frontend/internal/app/assets"
-	_ "github.com/sourcegraph/sourcegraph/cmd/frontend/registry"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/shared"
 )
 
@@ -10,5 +10,9 @@ import (
 // function for details.
 
 func main() {
-	shared.Main()
+	// Set dummy authz provider to unblock channel for checking permissions in GraphQL APIs.
+	// See https://github.com/sourcegraph/sourcegraph/issues/3847 for details.
+	authz.SetProviders(true, []authz.Provider{})
+
+	shared.Main(nil, nil)
 }

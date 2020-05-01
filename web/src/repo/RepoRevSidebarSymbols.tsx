@@ -1,5 +1,5 @@
 import * as H from 'history'
-import { isEqual } from 'lodash'
+import { escapeRegExp, isEqual } from 'lodash'
 import * as React from 'react'
 import { NavLink } from 'react-router-dom'
 import { Observable, Subject } from 'rxjs'
@@ -21,8 +21,8 @@ function symbolIsActive(symbolLocation: string, currentLocation: H.Location): bo
     )
 }
 
-const symbolIsActiveTrue = () => true
-const symbolIsActiveFalse = () => false
+const symbolIsActiveTrue = (): boolean => true
+const symbolIsActiveFalse = (): boolean => false
 
 interface SymbolNodeProps {
     node: GQL.ISymbol
@@ -36,11 +36,11 @@ const SymbolNode: React.FunctionComponent<SymbolNodeProps> = ({ node, location }
             <NavLink
                 to={node.url}
                 isActive={isActiveFunc}
-                className="repo-rev-sidebar-symbols-node__link"
+                className="repo-rev-sidebar-symbols-node__link e2e-symbol-link"
                 activeClassName="repo-rev-sidebar-symbols-node__link--active"
             >
-                <SymbolIcon kind={node.kind} className="icon-inline mr-1" />
-                <span className="repo-rev-sidebar-symbols-node__name">{node.name}</span>
+                <SymbolIcon kind={node.kind} className="icon-inline mr-1 e2e-symbol-icon" />
+                <span className="repo-rev-sidebar-symbols-node__name e2e-symbol-name">{node.name}</span>
                 {node.containerName && (
                     <span className="repo-rev-sidebar-symbols-node__container-name">
                         <small>{node.containerName}</small>
@@ -68,7 +68,7 @@ interface Props {
 export class RepoRevSidebarSymbols extends React.PureComponent<Props> {
     private componentUpdates = new Subject<Props>()
 
-    public componentDidUpdate(prevProps: Props): void {
+    public componentDidUpdate(): void {
         this.componentUpdates.next(this.props)
     }
 
@@ -81,9 +81,9 @@ export class RepoRevSidebarSymbols extends React.PureComponent<Props> {
                 pluralNoun="symbols"
                 queryConnection={this.fetchSymbols}
                 nodeComponent={SymbolNode}
-                nodeComponentProps={{ location: this.props.location } as Pick<SymbolNodeProps, 'location'>}
+                nodeComponentProps={{ location: this.props.location }}
                 defaultFirst={100}
-                shouldUpdateURLQuery={false}
+                useURLQuery={false}
                 history={this.props.history}
                 location={this.props.location}
             />
@@ -98,7 +98,9 @@ export class RepoRevSidebarSymbols extends React.PureComponent<Props> {
             switchMap(props =>
                 fetchSymbols(props.repoID, props.rev || '', {
                     ...args,
-                    includePatterns: [props.activePath],
+                    // `includePatterns` expects regexes, so first escape the
+                    // path.
+                    includePatterns: [escapeRegExp(props.activePath)],
                 })
             )
         )

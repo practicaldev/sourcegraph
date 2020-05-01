@@ -31,6 +31,7 @@ export const gitCommitFragment = gql`
         parents {
             oid
             abbreviatedOID
+            url
         }
         url
         canonicalURL
@@ -49,6 +50,11 @@ export const gitCommitFragment = gql`
             name
             email
             displayName
+            user {
+                id
+                username
+                url
+            }
         }
         date
     }
@@ -118,14 +124,14 @@ export class RepositoryCommitsPage extends React.PureComponent<Props> {
                     element={<RepoHeaderBreadcrumbNavItem key="commits">Commits</RepoHeaderBreadcrumbNavItem>}
                     repoHeaderContributionsLifecycleProps={this.props.repoHeaderContributionsLifecycleProps}
                 />
-                <FilteredConnection<GQL.IGitCommit, Pick<GitCommitNodeProps, 'repoName' | 'className' | 'compact'>>
+                <FilteredConnection<GQL.IGitCommit, Pick<GitCommitNodeProps, 'className' | 'compact'>>
                     className="repository-commits-page__content"
                     listClassName="list-group list-group-flush"
                     noun="commit"
                     pluralNoun="commits"
                     queryConnection={this.queryCommits}
                     nodeComponent={GitCommitNode}
-                    nodeComponentProps={{ repoName: this.props.repo.name, className: 'list-group-item' }}
+                    nodeComponentProps={{ className: 'list-group-item' }}
                     defaultFirst={20}
                     autoFocus={true}
                     history={this.props.history}
@@ -136,6 +142,6 @@ export class RepositoryCommitsPage extends React.PureComponent<Props> {
         )
     }
 
-    private queryCommits = (args: FilteredConnectionQueryArgs) =>
+    private queryCommits = (args: FilteredConnectionQueryArgs): Observable<GQL.IGitCommitConnection> =>
         fetchGitCommits({ ...args, repo: this.props.repo.id, revspec: this.props.commitID })
 }

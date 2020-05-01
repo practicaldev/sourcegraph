@@ -8,10 +8,14 @@ import * as GQL from '../../../../../shared/src/graphql/schema'
 import { asError, createAggregateError, ErrorLike, isErrorLike } from '../../../../../shared/src/util/errors'
 import { queryGraphQL } from '../../../backend/graphql'
 import { ExtensionsExploreSectionExtensionCard } from './ExtensionsExploreSectionExtensionCard'
+import { ErrorAlert } from '../../../components/alerts'
+import * as H from 'history'
 
-interface Props {}
+interface Props {
+    history: H.History
+}
 
-const LOADING: 'loading' = 'loading'
+const LOADING = 'loading' as const
 
 interface State {
     /** The extensions, loading, or an error. */
@@ -62,46 +66,34 @@ export class ExtensionsExploreSection extends React.PureComponent<Props, State> 
                 : this.state.extensionsOrError.nodes
 
         return (
-            <div className="extensions-explore-section">
-                <h2 className="extensions-explore-section__section-title">Top Sourcegraph extensions</h2>
+            <div className="card">
+                <h3 className="card-header">Top Sourcegraph extensions</h3>
                 {isErrorLike(extensionsOrError) ? (
-                    <div className="alert alert-danger">Error: {extensionsOrError.message}</div>
+                    <ErrorAlert error={extensionsOrError} history={this.props.history} />
                 ) : extensionsOrError.length === 0 ? (
                     <p>No extensions are available.</p>
                 ) : (
-                    <>
-                        <div className="extensions-explore-section__row">
-                            {extensionsOrError.slice(0, ExtensionsExploreSection.QUERY_EXTENSIONS_ARG_FIRST).map((
-                                extension /* or loading */,
-                                i
-                            ) => (
-                                <div key={i} className="extensions-explore-section__card">
-                                    {extension === LOADING ? (
-                                        <ExtensionsExploreSectionExtensionCard
-                                            extensionID=""
-                                            // Spacer to reduce loading jitter.
-                                            description=""
-                                        />
-                                    ) : (
-                                        <ExtensionsExploreSectionExtensionCard
-                                            extensionID={extension.extensionIDWithoutRegistry}
-                                            description={
-                                                (extension.manifest && extension.manifest.description) || undefined
-                                            }
-                                            url={extension.url}
-                                        />
-                                    )}
-                                </div>
+                    <div className="list-group list-group-flush">
+                        {extensionsOrError
+                            .slice(0, ExtensionsExploreSection.QUERY_EXTENSIONS_ARG_FIRST)
+                            .filter((e): e is GQL.IRegistryExtension => e !== LOADING)
+                            .map(extension => (
+                                <ExtensionsExploreSectionExtensionCard
+                                    key={extension.id}
+                                    extensionID={extension.extensionIDWithoutRegistry}
+                                    description={(extension.manifest && extension.manifest.description) || undefined}
+                                    url={extension.url}
+                                    className="list-group-item list-group-item-action"
+                                />
                             ))}
-                        </div>
-                        <div className="text-right mt-2">
-                            <Link to="/extensions">
-                                View all extensions
-                                <ChevronRightIcon className="icon-inline" />
-                            </Link>
-                        </div>
-                    </>
+                    </div>
                 )}
+                <div className="card-footer">
+                    <Link to="/extensions">
+                        View all extensions
+                        <ChevronRightIcon className="icon-inline" />
+                    </Link>
+                </div>
             </div>
         )
     }
@@ -116,6 +108,7 @@ function queryExtensions(
                 extensionRegistry {
                     extensions(first: $first, prioritizeExtensionIDs: $prioritizeExtensionIDs) {
                         nodes {
+                            id
                             extensionIDWithoutRegistry
                             url
                             manifest {

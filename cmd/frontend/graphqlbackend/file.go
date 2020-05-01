@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/backend"
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/pkg/markdown"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/highlight"
-	"github.com/sourcegraph/sourcegraph/pkg/vcs/git"
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/highlight"
+	"github.com/sourcegraph/sourcegraph/internal/markdown"
+	"github.com/sourcegraph/sourcegraph/internal/vcs/git"
 )
 
-func (r *gitTreeEntryResolver) Content(ctx context.Context) (string, error) {
+func (r *GitTreeEntryResolver) Content(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -23,12 +23,7 @@ func (r *gitTreeEntryResolver) Content(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	oid, err := r.commit.OID()
-	if err != nil {
-		return "", err
-	}
-
-	contents, err := git.ReadFile(ctx, *cachedRepo, api.CommitID(oid), r.path)
+	contents, err := git.ReadFile(ctx, *cachedRepo, api.CommitID(r.commit.OID()), r.Path(), 0)
 	if err != nil {
 		return "", err
 	}
@@ -36,8 +31,8 @@ func (r *gitTreeEntryResolver) Content(ctx context.Context) (string, error) {
 	return string(contents), nil
 }
 
-func (r *gitTreeEntryResolver) RichHTML(ctx context.Context) (string, error) {
-	switch path.Ext(r.path) {
+func (r *GitTreeEntryResolver) RichHTML(ctx context.Context) (string, error) {
+	switch path.Ext(r.Path()) {
 	case ".md", ".mdown", ".markdown", ".markdn":
 		break
 	default:
@@ -47,7 +42,7 @@ func (r *gitTreeEntryResolver) RichHTML(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return markdown.Render(content, nil), nil
+	return markdown.Render(content), nil
 }
 
 type markdownOptions struct {
@@ -58,7 +53,7 @@ func (*schemaResolver) RenderMarkdown(args *struct {
 	Markdown string
 	Options  *markdownOptions
 }) string {
-	return markdown.Render(args.Markdown, nil)
+	return markdown.Render(args.Markdown)
 }
 
 func (*schemaResolver) HighlightCode(ctx context.Context, args *struct {
@@ -69,14 +64,19 @@ func (*schemaResolver) HighlightCode(ctx context.Context, args *struct {
 }) (string, error) {
 	language := highlight.SyntectLanguageMap[strings.ToLower(args.FuzzyLanguage)]
 	filePath := "file." + language
-	html, _, err := highlight.Code(ctx, []byte(args.Code), filePath, args.DisableTimeout, args.IsLightTheme)
+	html, _, err := highlight.Code(ctx, highlight.Params{
+		Content:        []byte(args.Code),
+		Filepath:       filePath,
+		DisableTimeout: args.DisableTimeout,
+		IsLightTheme:   args.IsLightTheme,
+	})
 	if err != nil {
 		return args.Code, err
 	}
 	return string(html), nil
 }
 
-func (r *gitTreeEntryResolver) Binary(ctx context.Context) (bool, error) {
+func (r *GitTreeEntryResolver) Binary(ctx context.Context) (bool, error) {
 	content, err := r.Content(ctx)
 	if err != nil {
 		return false, err
@@ -92,9 +92,10 @@ type highlightedFileResolver struct {
 func (h *highlightedFileResolver) Aborted() bool { return h.aborted }
 func (h *highlightedFileResolver) HTML() string  { return h.html }
 
-func (r *gitTreeEntryResolver) Highlight(ctx context.Context, args *struct {
-	DisableTimeout bool
-	IsLightTheme   bool
+func (r *GitTreeEntryResolver) Highlight(ctx context.Context, args *struct {
+	DisableTimeout     bool
+	IsLightTheme       bool
+	HighlightLongLines bool
 }) (*highlightedFileResolver, error) {
 	// Timeout for reading file via Git.
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -105,12 +106,7 @@ func (r *gitTreeEntryResolver) Highlight(ctx context.Context, args *struct {
 		return nil, err
 	}
 
-	oid, err := r.commit.OID()
-	if err != nil {
-		return nil, err
-	}
-
-	content, err := git.ReadFile(ctx, *cachedRepo, api.CommitID(oid), r.path)
+	content, err := git.ReadFile(ctx, *cachedRepo, api.CommitID(r.commit.OID()), r.Path(), 0)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +116,19 @@ func (r *gitTreeEntryResolver) Highlight(ctx context.Context, args *struct {
 		html   template.HTML
 		result = &highlightedFileResolver{}
 	)
-	html, result.aborted, err = highlight.Code(ctx, content, r.path, args.DisableTimeout, args.IsLightTheme)
+	simulateTimeout := r.commit.repo.repo.Name == "github.com/sourcegraph/AlwaysHighlightTimeoutTest"
+	html, result.aborted, err = highlight.Code(ctx, highlight.Params{
+		Content:            content,
+		Filepath:           r.Path(),
+		DisableTimeout:     args.DisableTimeout,
+		IsLightTheme:       args.IsLightTheme,
+		HighlightLongLines: args.HighlightLongLines,
+		SimulateTimeout:    simulateTimeout,
+		Metadata: highlight.Metadata{
+			RepoName: string(r.commit.repo.repo.Name),
+			Revision: string(r.commit.oid),
+		},
+	})
 	if err != nil {
 		return nil, err
 	}

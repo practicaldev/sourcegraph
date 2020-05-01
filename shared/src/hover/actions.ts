@@ -1,7 +1,7 @@
-import { HoveredToken, LOADER_DELAY } from '@sourcegraph/codeintellify'
+import { HoveredToken, LOADER_DELAY, MaybeLoadingResult, emitLoading } from '@sourcegraph/codeintellify'
 import * as H from 'history'
 import { isEqual, uniqWith } from 'lodash'
-import { combineLatest, merge, Observable, of, Subscription, Unsubscribable } from 'rxjs'
+import { combineLatest, merge, Observable, of, Subscription, Unsubscribable, concat } from 'rxjs'
 import {
     catchError,
     delay,
@@ -10,23 +10,27 @@ import {
     first,
     map,
     share,
-    startWith,
     switchMap,
     takeUntil,
+    scan,
+    mapTo,
 } from 'rxjs/operators'
-import { ActionItemProps } from '../actions/ActionItem'
+import { ActionItemAction } from '../actions/ActionItem'
 import { Context } from '../api/client/context/context'
-import { Model } from '../api/client/model'
+import { parse, parseTemplate } from '../api/client/context/expr/evaluator'
 import { Services } from '../api/client/services'
+import { WorkspaceRootWithMetadata } from '../api/client/services/workspaceService'
 import { ContributableMenu, TextDocumentPositionParams } from '../api/protocol'
+import { isPrivateRepoPublicSourcegraphComErrorLike } from '../backend/errors'
+import { resolveRawRepoName } from '../backend/repo'
 import { getContributedActionItems } from '../contributions/contributions'
 import { ExtensionsControllerProps } from '../extensions/controller'
-import { PlatformContext, PlatformContextProps } from '../platform/context'
+import { PlatformContext, PlatformContextProps, URLToFileContext } from '../platform/context'
 import { asError, ErrorLike, isErrorLike } from '../util/errors'
 import { makeRepoURI, parseRepoURI, withWorkspaceRootInputRevision } from '../util/url'
 import { HoverContext } from './HoverOverlay'
 
-const LOADING: 'loading' = 'loading'
+const LOADING = 'loading' as const
 
 /**
  * This function is passed to {@link module:@sourcegraph/codeintellify.createHoverifier}, which uses it to fetch
@@ -35,9 +39,12 @@ const LOADING: 'loading' = 'loading'
  * "Find references".
  */
 export function getHoverActions(
-    { extensionsController, platformContext }: ExtensionsControllerProps & PlatformContextProps<'urlToFile'>,
+    {
+        extensionsController,
+        platformContext,
+    }: ExtensionsControllerProps & PlatformContextProps<'urlToFile' | 'requestGraphQL'>,
     hoverContext: HoveredToken & HoverContext
-): Observable<ActionItemProps[]> {
+): Observable<ActionItemAction[]> {
     return getHoverActionsContext({ extensionsController, platformContext }, hoverContext).pipe(
         switchMap(context =>
             extensionsController.services.contribution
@@ -58,7 +65,7 @@ export interface HoverActionsContext extends Context<TextDocumentPositionParams>
     ['goToDefinition.notFound']: boolean
     ['goToDefinition.error']: boolean
     ['findReferences.url']: string | null
-    hoverPosition: TextDocumentPositionParams
+    hoverPosition: TextDocumentPositionParams & URLToFileContext
 }
 
 /**
@@ -69,82 +76,85 @@ export interface HoverActionsContext extends Context<TextDocumentPositionParams>
 export function getHoverActionsContext(
     {
         extensionsController,
-        platformContext: { urlToFile },
+        platformContext: { urlToFile, requestGraphQL },
     }:
-        | (ExtensionsControllerProps & PlatformContextProps<'urlToFile'>)
+        | (ExtensionsControllerProps & PlatformContextProps<'urlToFile' | 'requestGraphQL'>)
         | {
               extensionsController: {
                   services: {
-                      model: {
-                          model: { value: Pick<Model, 'roots'> }
+                      workspace: {
+                          roots: { value: readonly WorkspaceRootWithMetadata[] }
                       }
                       textDocumentDefinition: Pick<Services['textDocumentDefinition'], 'getLocations'>
                       textDocumentReferences: Pick<Services['textDocumentReferences'], 'providersForDocument'>
                   }
               }
-              platformContext: Pick<PlatformContext, 'urlToFile'>
+              platformContext: Pick<PlatformContext, 'urlToFile' | 'requestGraphQL'>
           },
     hoverContext: HoveredToken & HoverContext
 ): Observable<Context<TextDocumentPositionParams>> {
-    const params: TextDocumentPositionParams = {
+    const params: TextDocumentPositionParams & URLToFileContext = {
         textDocument: { uri: makeRepoURI(hoverContext) },
         position: { line: hoverContext.line - 1, character: hoverContext.character - 1 },
+        part: hoverContext.part,
     }
-    const definitionURLOrError = getDefinitionURL({ urlToFile }, extensionsController.services, params).pipe(
-        map(result => (result ? result.url : result)), // we only care about the URL or null, not whether there are multiple
-        catchError(err => [asError(err) as ErrorLike]),
+    const definitionURLOrError = getDefinitionURL(
+        { urlToFile, requestGraphQL },
+        extensionsController.services,
+        params
+    ).pipe(
+        catchError((err): [MaybeLoadingResult<ErrorLike>] => [{ isLoading: false, result: asError(err) }]),
         share()
     )
 
-    return combineLatest(
-        // To reduce UI jitter, don't show "Go to definition" until (1) the result or an error was received or (2)
-        // the fairly long LOADER_DELAY has elapsed.
-        merge(
-            [undefined], // don't block on the first emission
-            of(LOADING).pipe(
-                delay(LOADER_DELAY),
-                takeUntil(definitionURLOrError)
-            ),
-            definitionURLOrError
-        ),
+    return combineLatest([
+        // definitionURLOrError:
+        definitionURLOrError.pipe(emitLoading<UIDefinitionURL | ErrorLike, null>(LOADER_DELAY, null)),
 
+        // hasReferenceProvider:
         // Only show "Find references" if a reference provider is registered. Unlike definitions, references are
         // not preloaded and here just involve statically constructing a URL, so no need to indicate loading.
         extensionsController.services.textDocumentReferences
             .providersForDocument(params.textDocument)
             .pipe(map(providers => providers.length !== 0)),
 
+        // showFindReferences:
         // If there is no definition, delay showing "Find references" because it is likely that the token is
         // punctuation or something else that has no meaningful references. This reduces UI jitter when it can be
         // quickly determined that there is no definition. TODO(sqs): Allow reference providers to register
         // "trigger characters" or have a "hasReferences" method to opt-out of being called for certain tokens.
         merge(
+            [false],
             of(true).pipe(
                 delay(LOADER_DELAY),
-                takeUntil(definitionURLOrError.pipe(filter(v => !!v)))
+                takeUntil(definitionURLOrError.pipe(filter(({ result }) => result !== null)))
             ),
             definitionURLOrError.pipe(
-                filter(v => !!v),
-                map(v => !!v)
+                filter(({ result }) => result !== null),
+                mapTo(true)
             )
-        ).pipe(startWith(false))
-    ).pipe(
+        ),
+    ]).pipe(
         map(
             ([definitionURLOrError, hasReferenceProvider, showFindReferences]): HoverActionsContext => ({
                 'goToDefinition.showLoading': definitionURLOrError === LOADING,
                 'goToDefinition.url':
-                    (definitionURLOrError !== LOADING && !isErrorLike(definitionURLOrError) && definitionURLOrError) ||
+                    (definitionURLOrError !== LOADING &&
+                        !isErrorLike(definitionURLOrError) &&
+                        definitionURLOrError?.url) ||
                     null,
                 'goToDefinition.notFound':
                     definitionURLOrError !== LOADING &&
                     !isErrorLike(definitionURLOrError) &&
                     definitionURLOrError === null,
-                'goToDefinition.error':
-                    isErrorLike(definitionURLOrError) && ((definitionURLOrError as any).stack as any),
+                'goToDefinition.error': isErrorLike(definitionURLOrError) && (definitionURLOrError as any).stack,
 
                 'findReferences.url':
                     hasReferenceProvider && showFindReferences
-                        ? urlToFile({ ...hoverContext, position: hoverContext, viewState: 'references' })
+                        ? urlToFile(
+                              { ...hoverContext, position: hoverContext, viewState: 'references' },
+                              { part: hoverContext.part }
+                          )
                         : null,
 
                 // Store hoverPosition for the goToDefinition action's commandArguments to refer to.
@@ -155,6 +165,18 @@ export function getHoverActionsContext(
     )
 }
 
+export interface UIDefinitionURL {
+    /**
+     * The target browser URL to navigate to when go to definition is invoked.
+     */
+    url: string
+
+    /**
+     * Whether the URL refers to a definition panel that shows multiple definitions.
+     */
+    multiple: boolean
+}
+
 /**
  * Returns an observable that emits null if no definitions are found, {url, multiple: false} if exactly 1
  * definition is found, {url: defPanelURL, multiple: true} if multiple definitions are found, or an error.
@@ -162,68 +184,101 @@ export function getHoverActionsContext(
  * @internal Exported for testing only.
  */
 export function getDefinitionURL(
-    { urlToFile }: Pick<PlatformContext, 'urlToFile'>,
+    { urlToFile, requestGraphQL }: Pick<PlatformContext, 'urlToFile' | 'requestGraphQL'>,
     {
-        model,
+        workspace,
         textDocumentDefinition,
     }: {
-        model: {
-            model: { value: Pick<Model, 'roots'> }
+        workspace: {
+            roots: { value: readonly WorkspaceRootWithMetadata[] }
         }
         textDocumentDefinition: Pick<Services['textDocumentDefinition'], 'getLocations'>
     },
-    params: TextDocumentPositionParams
-): Observable<{ url: string; multiple: boolean } | null> {
+    params: TextDocumentPositionParams & URLToFileContext
+): Observable<MaybeLoadingResult<UIDefinitionURL | null>> {
     return textDocumentDefinition.getLocations(params).pipe(
-        switchMap(locations => locations),
-        map(definitions => {
-            if (definitions === null || definitions.length === 0) {
-                return null
-            }
+        switchMap(
+            ({ isLoading, result: definitions }): Observable<Partial<MaybeLoadingResult<UIDefinitionURL | null>>> => {
+                if (definitions.length === 0) {
+                    return of<MaybeLoadingResult<UIDefinitionURL | null>>({ isLoading, result: null })
+                }
 
-            // Get unique definitions.
-            definitions = uniqWith(definitions, isEqual)
+                // Get unique definitions.
+                definitions = uniqWith(definitions, isEqual)
 
-            if (definitions.length > 1) {
-                // Open the panel to show all definitions.
-                const uri = withWorkspaceRootInputRevision(
-                    model.model.value.roots || [],
-                    parseRepoURI(params.textDocument.uri)
+                if (definitions.length > 1) {
+                    // Open the panel to show all definitions.
+                    const uri = withWorkspaceRootInputRevision(
+                        workspace.roots.value || [],
+                        parseRepoURI(params.textDocument.uri)
+                    )
+                    return of<MaybeLoadingResult<UIDefinitionURL | null>>({
+                        isLoading,
+                        result: {
+                            url: urlToFile(
+                                {
+                                    ...uri,
+                                    rev: uri.rev || '',
+                                    filePath: uri.filePath || '',
+                                    position: {
+                                        line: params.position.line + 1,
+                                        character: params.position.character + 1,
+                                    },
+                                    viewState: 'def',
+                                },
+                                { part: params.part }
+                            ),
+                            multiple: true,
+                        },
+                    })
+                }
+                const def = definitions[0]
+
+                // Preserve the input revision (e.g., a Git branch name instead of a Git commit SHA) if the result is
+                // inside one of the current roots. This avoids navigating the user from (e.g.) a URL with a nice Git
+                // branch name to a URL with a full Git commit SHA.
+                const uri = withWorkspaceRootInputRevision(workspace.roots.value || [], parseRepoURI(def.uri))
+
+                if (def.range) {
+                    uri.position = {
+                        line: def.range.start.line + 1,
+                        character: def.range.start.character + 1,
+                    }
+                }
+
+                // When returning a single definition, include the repo's
+                // `rawRepoName`, to allow building URLs on the code host.
+                return concat(
+                    // While we resolve the raw repo name, emit isLoading with the previous result
+                    // (merged in the scan() below)
+                    [{ isLoading: true }],
+                    resolveRawRepoName({ ...uri, requestGraphQL }).pipe(
+                        // When encountering an ERPRIVATEREPOPUBLICSOURCEGRAPHCOM, we can assume that
+                        // we're executing in a browser extension pointed to the public sourcegraph.com,
+                        // in which case repoName === rawRepoName.
+                        catchError(err => {
+                            if (isPrivateRepoPublicSourcegraphComErrorLike(err)) {
+                                return [uri.repoName]
+                            }
+                            throw err
+                        }),
+                        map(rawRepoName => ({
+                            url: urlToFile(
+                                { ...uri, rev: uri.rev || '', filePath: uri.filePath || '', rawRepoName },
+                                { part: params.part }
+                            ),
+                            multiple: false,
+                        })),
+                        map(result => ({ isLoading, result }))
+                    )
                 )
-                return {
-                    url: urlToFile({
-                        ...uri,
-                        rev: uri.rev || '',
-                        filePath: uri.filePath || '',
-                        position: { line: params.position.line + 1, character: params.position.character + 1 },
-                        viewState: 'def',
-                    }),
-                    multiple: true,
-                }
             }
-            const def = definitions[0]
-
-            // Preserve the input revision (e.g., a Git branch name instead of a Git commit SHA) if the result is
-            // inside one of the current roots. This avoids navigating the user from (e.g.) a URL with a nice Git
-            // branch name to a URL with a full Git commit SHA.
-            const uri = withWorkspaceRootInputRevision(model.model.value.roots || [], parseRepoURI(def.uri))
-
-            if (def.range) {
-                uri.position = {
-                    line: def.range.start.line + 1,
-                    character: def.range.start.character + 1,
-                }
-            }
-
-            return {
-                url: urlToFile({
-                    ...uri,
-                    rev: uri.rev || '',
-                    filePath: uri.filePath || '',
-                }),
-                multiple: false,
-            }
-        })
+        ),
+        // Merge partial updates
+        scan(
+            (previous, current) => ({ ...previous, ...current }),
+            ((): MaybeLoadingResult<UIDefinitionURL | null> => ({ isLoading: true, result: null }))()
+        )
     )
 }
 
@@ -232,21 +287,22 @@ export function getDefinitionURL(
  */
 export function registerHoverContributions({
     extensionsController,
-    platformContext: { urlToFile },
+    platformContext: { urlToFile, requestGraphQL },
     history,
 }: (
     | (ExtensionsControllerProps & PlatformContextProps)
     | {
           extensionsController: {
               services: Pick<Services, 'commands' | 'contribution'> & {
-                  model: {
-                      model: { value: Pick<Model, 'roots'> }
+                  workspace: {
+                      roots: { value: readonly WorkspaceRootWithMetadata[] }
                   }
                   textDocumentDefinition: Pick<Services['textDocumentDefinition'], 'getLocations'>
               }
           }
-          platformContext: Pick<PlatformContext, 'urlToFile'>
-      }) & {
+          platformContext: Pick<PlatformContext, 'urlToFile' | 'requestGraphQL'>
+      }
+) & {
     history: H.History
 }): Unsubscribable {
     const subscriptions = new Subscription()
@@ -276,22 +332,22 @@ export function registerHoverContributions({
                 actions: [
                     {
                         id: 'goToDefinition',
-                        title: 'Go to definition',
+                        title: parseTemplate('Go to definition'),
                         command: 'goToDefinition',
                         commandArguments: [
-                            // tslint:disable:no-invalid-template-strings
-                            '${json(hoverPosition)}',
-                            // tslint:enable:no-invalid-template-strings
+                            /* eslint-disable no-template-curly-in-string */
+                            parseTemplate('${json(hoverPosition)}'),
+                            /* eslint-enable no-template-curly-in-string */
                         ],
                     },
                     {
                         // This action is used when preloading the definition succeeded and at least 1
                         // definition was found.
                         id: 'goToDefinition.preloaded',
-                        title: 'Go to definition',
+                        title: parseTemplate('Go to definition'),
                         command: 'open',
-                        // tslint:disable-next-line:no-invalid-template-strings
-                        commandArguments: ['${goToDefinition.url}'],
+                        // eslint-disable-next-line no-template-curly-in-string
+                        commandArguments: [parseTemplate('${goToDefinition.url}')],
                     },
                 ],
                 menus: {
@@ -300,11 +356,11 @@ export function registerHoverContributions({
                         // goToDefinition.{error, loading, url} will all be falsey.)
                         {
                             action: 'goToDefinition',
-                            when: 'goToDefinition.error || goToDefinition.showLoading',
+                            when: parse('goToDefinition.error || goToDefinition.showLoading'),
                         },
                         {
                             action: 'goToDefinition.preloaded',
-                            when: 'goToDefinition.url',
+                            when: parse('goToDefinition.url'),
                         },
                     ],
                 },
@@ -315,9 +371,13 @@ export function registerHoverContributions({
         extensionsController.services.commands.registerCommand({
             command: 'goToDefinition',
             run: async (paramsStr: string) => {
-                const params: TextDocumentPositionParams = JSON.parse(paramsStr)
-                const result = await getDefinitionURL({ urlToFile }, extensionsController.services, params)
-                    .pipe(first())
+                const params: TextDocumentPositionParams & URLToFileContext = JSON.parse(paramsStr)
+                const { result } = await getDefinitionURL(
+                    { urlToFile, requestGraphQL },
+                    extensionsController.services,
+                    params
+                )
+                    .pipe(first(({ isLoading, result }) => !isLoading || result !== null))
                     .toPromise()
                 if (!result) {
                     throw new Error('No definition found.')
@@ -350,10 +410,10 @@ export function registerHoverContributions({
                 actions: [
                     {
                         id: 'findReferences',
-                        title: 'Find references',
+                        title: parseTemplate('Find references'),
                         command: 'open',
-                        // tslint:disable-next-line:no-invalid-template-strings
-                        commandArguments: ['${findReferences.url}'],
+                        // eslint-disable-next-line no-template-curly-in-string
+                        commandArguments: [parseTemplate('${findReferences.url}')],
                     },
                 ],
                 menus: {
@@ -364,8 +424,9 @@ export function registerHoverContributions({
                         // logic is implemented in the observable pipe that sets findReferences.url above.
                         {
                             action: 'findReferences',
-                            when:
-                                'findReferences.url && (goToDefinition.showLoading || goToDefinition.url || goToDefinition.error || goToDefinition.notFound)',
+                            when: parse(
+                                'findReferences.url && (goToDefinition.showLoading || goToDefinition.url || goToDefinition.error)'
+                            ),
                         },
                     ],
                 },

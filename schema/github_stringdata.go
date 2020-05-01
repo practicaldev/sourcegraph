@@ -8,6 +8,7 @@ const GitHubSchemaJSON = `{
   "$id": "github.schema.json#",
   "title": "GitHubConnection",
   "description": "Configuration for a connection to GitHub or GitHub Enterprise.",
+  "allowComments": true,
   "type": "object",
   "additionalProperties": false,
   "required": ["url", "token"],
@@ -24,47 +25,125 @@ const GitHubSchemaJSON = `{
       "examples": ["https://github.com", "https://github-enterprise.example.com"]
     },
     "gitURLType": {
-      "description": "The type of Git URLs to use for cloning and fetching Git repositories on this GitHub instance.\n\nIf \"http\", Sourcegraph will access GitLab repositories using Git URLs of the form http(s)://github.com/myteam/myproject.git (using https: if the GitHub instance uses HTTPS).\n\nIf \"ssh\", Sourcegraph will access GitHub repositories using Git URLs of the form git@github.com:myteam/myproject.git. See the documentation for how to provide SSH private keys and known_hosts: https://docs.sourcegraph.com/admin/repo/auth#repositories-that-need-http-s-or-ssh-authentication.",
+      "description": "The type of Git URLs to use for cloning and fetching Git repositories on this GitHub instance.\n\nIf \"http\", Sourcegraph will access GitHub repositories using Git URLs of the form http(s)://github.com/myteam/myproject.git (using https: if the GitHub instance uses HTTPS).\n\nIf \"ssh\", Sourcegraph will access GitHub repositories using Git URLs of the form git@github.com:myteam/myproject.git. See the documentation for how to provide SSH private keys and known_hosts: https://docs.sourcegraph.com/admin/repo/auth#repositories-that-need-http-s-or-ssh-authentication.",
       "type": "string",
       "enum": ["http", "ssh"],
       "default": "http"
     },
     "token": {
-      "description": "A GitHub personal access token. Create one for GitHub.com at https://github.com/settings/tokens/new?scopes=repo&description=Sourcegraph (for GitHub Enterprise, replace github.com with your instance's hostname). The \"repo\" scope is required to mirror private repositories. If using only public repositories, you can create the token with no scopes.",
+      "description": "A GitHub personal access token. Create one for GitHub.com at https://github.com/settings/tokens/new?description=Sourcegraph (for GitHub Enterprise, replace github.com with your instance's hostname). See https://docs.sourcegraph.com/admin/external_service/github#github-api-token-and-access for which scopes are required for which use cases.",
       "type": "string",
       "minLength": 1
     },
+    "rateLimit": {
+      "description": "Rate limit applied when making background API requests to GitHub.",
+      "title": "GitHubRateLimit",
+      "type": "object",
+      "required": ["enabled", "requestsPerHour"],
+      "properties": {
+        "enabled": {
+          "description": "true if rate limiting is enabled.",
+          "type": "boolean",
+          "default": true
+        },
+        "requestsPerHour": {
+          "description": "Requests per hour permitted. This is an average, calculated per second.",
+          "type": "number",
+          "default": 5000,
+          "minimum": 0
+        }
+      },
+      "default": {
+        "enabled": true,
+        "requestsPeHour": 5000
+      }
+    },
     "certificate": {
-      "description": "TLS certificate of a GitHub Enterprise instance. To get the certificate run ` + "`" + `openssl s_client -connect HOST:443 -showcerts < /dev/null 2> /dev/null | openssl x509 -outform PEM` + "`" + `",
+      "description": "TLS certificate of the GitHub Enterprise instance. This is only necessary if the certificate is self-signed or signed by an internal CA. To get the certificate run ` + "`" + `openssl s_client -connect HOST:443 -showcerts < /dev/null 2> /dev/null | openssl x509 -outform PEM` + "`" + `. To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.",
       "type": "string",
-      "pattern": "^-----BEGIN CERTIFICATE-----\n"
+      "pattern": "^-----BEGIN CERTIFICATE-----\n",
+      "examples": ["-----BEGIN CERTIFICATE-----\n..."]
     },
     "repos": {
       "description": "An array of repository \"owner/name\" strings specifying which GitHub or GitHub Enterprise repositories to mirror on Sourcegraph.",
       "type": "array",
-      "items": { "type": "string", "pattern": "^[\\w-]+/[\\w.-]+$" }
+      "items": { "type": "string", "pattern": "^[\\w-]+/[\\w.-]+$" },
+      "examples": [["owner/name"], ["kubernetes/kubernetes", "golang/go", "facebook/react"]]
+    },
+    "orgs": {
+      "description": "An array of organization names identifying GitHub organizations whose repositories should be mirrored on Sourcegraph.",
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[\\w-]+$" },
+      "examples": [["name"], ["kubernetes", "golang", "facebook"]]
+    },
+    "webhooks": {
+      "description": "An array of configurations defining existing GitHub webhooks that send updates back to Sourcegraph.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "title": "GitHubWebhook",
+        "required": ["org", "secret"],
+        "properties": {
+          "org": {
+            "description": "The name of the GitHub organization to which the webhook belongs",
+            "type": "string",
+            "minLength": 1
+          },
+          "secret": {
+            "description": "The secret used when creating the webhook",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "examples": [[{ "org": "yourorgname", "secret": "webhook-secret" }]]
     },
     "exclude": {
-      "description": "A list of repositories to never mirror from this GitHub instance. Takes precedence over \"repos\" and \"repositoryQuery\" configuration.",
+      "description": "A list of repositories to never mirror from this GitHub instance. Takes precedence over \"orgs\", \"repos\", and \"repositoryQuery\" configuration.\n\nSupports excluding by name ({\"name\": \"owner/name\"}) or by ID ({\"id\": \"MDEwOlJlcG9zaXRvcnkxMTczMDM0Mg==\"}).\n\nNote: ID is the GitHub GraphQL ID, not the GitHub database ID. eg: \"curl https://api.github.com/repos/vuejs/vue | jq .node_id\"",
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
+        "title": "ExcludedGitHubRepo",
         "additionalProperties": false,
-        "anyOf": [{ "required": ["name"] }, { "required": ["id"] }],
+        "anyOf": [
+          { "required": ["name"] },
+          { "required": ["id"] },
+          { "required": ["pattern"] },
+          { "required": ["forks"] },
+          { "required": ["archived"] }
+        ],
         "properties": {
+          "archived": {
+            "description": "If set to true, archived repositories will be excluded.",
+            "type": "boolean"
+          },
+          "forks": {
+            "description": "If set to true, forks will be excluded.",
+            "type": "boolean"
+          },
           "name": {
             "description": "The name of a GitHub repository (\"owner/name\") to exclude from mirroring.",
             "type": "string",
             "pattern": "^[\\w-]+/[\\w.-]+$"
           },
           "id": {
-            "description": "The ID of a GitHub repository (as returned by the GitHub instance's API) to exclude from mirroring.",
+            "description": "The node ID of a GitHub repository (as returned by the GitHub instance's API) to exclude from mirroring. Use this to exclude the repository, even if renamed. Note: This is the GraphQL ID, not the GitHub database ID. eg: \"curl https://api.github.com/repos/vuejs/vue | jq .node_id\"",
             "type": "string",
             "minLength": 1
+          },
+          "pattern": {
+            "description": "Regular expression which matches against the name of a GitHub repository (\"owner/name\").",
+            "type": "string",
+            "format": "regex"
           }
         }
-      }
+      },
+      "examples": [
+        [{ "forks": true }],
+        [{ "name": "owner/name" }, { "id": "MDEwOlJlcG9zaXRvcnkxMTczMDM0Mg==" }],
+        [{ "name": "vuejs/vue" }, { "name": "php/php-src" }, { "pattern": "^topsecretorg/.*" }]
+      ]
     },
     "repositoryQuery": {
       "description": "An array of strings specifying which GitHub or GitHub Enterprise repositories to mirror on Sourcegraph. The valid values are:\n\n- ` + "`" + `public` + "`" + ` mirrors all public repositories for GitHub Enterprise and is the equivalent of ` + "`" + `none` + "`" + ` for GitHub\n\n- ` + "`" + `affiliated` + "`" + ` mirrors all repositories affiliated with the configured token's user:\n\t- Private repositories with read access\n\t- Public repositories owned by the user or their orgs\n\t- Public repositories with write access\n\n- ` + "`" + `none` + "`" + ` mirrors no repositories (except those specified in the ` + "`" + `repos` + "`" + ` configuration property or added manually)\n\n- All other values are executed as a GitHub advanced repository search as described at https://github.com/search/advanced. Example: to sync all repositories from the \"sourcegraph\" organization including forks the query would be \"org:sourcegraph fork:true\".\n\nIf multiple values are provided, their results are unioned.\n\nIf you need to narrow the set of mirrored repositories further (and don't want to enumerate it with a list or query set as above), create a new bot/machine user on GitHub or GitHub Enterprise that is only affiliated with the desired repositories.",
@@ -91,7 +170,7 @@ const GitHubSchemaJSON = `{
       "type": "object",
       "properties": {
         "ttl": {
-          "description": "The TTL of how long to cache permissions data. This is 3 hours by default.\n\nDecreasing the TTL will increase the load on the code host API. If you have X repositories on your instance, it will take ~X/100 API requests to fetch the complete list for 1 user.  If you have Y users, you will incur X*Y/100 API requests per cache refresh period.\n\nIf set to zero, Sourcegraph will sync a user's entire accessible repository list on every request (NOT recommended).",
+          "description": "The TTL of how long to cache permissions data. This is 3 hours by default.\n\nDecreasing the TTL will increase the load on the code host API. If you have X private repositories on your instance, it will take ~X/100 API requests to fetch the complete list for 1 user.  If you have Y users, you will incur up to X*Y/100 API requests per cache refresh period (depending on user activity).\n\nIf set to zero, Sourcegraph will sync a user's entire accessible repository list on every request (NOT recommended).\n\nPublic repositories are cached once for all users per cache TTL period.",
           "type": "string",
           "default": "3h"
         }

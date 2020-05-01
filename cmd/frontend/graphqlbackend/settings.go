@@ -2,12 +2,14 @@ package graphqlbackend
 
 import (
 	"context"
-	"time"
+	"errors"
+	"os"
+	"strconv"
 
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/db"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
-	"github.com/sourcegraph/sourcegraph/cmd/query-runner/queryrunnerapi"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/env"
 )
 
 type settingsResolver struct {
@@ -29,10 +31,12 @@ func (o *settingsResolver) Configuration() *configurationResolver {
 	return &configurationResolver{contents: o.settings.Contents}
 }
 
-func (o *settingsResolver) Contents() string { return o.settings.Contents }
+func (o *settingsResolver) Contents() JSONCString {
+	return JSONCString(o.settings.Contents)
+}
 
-func (o *settingsResolver) CreatedAt() string {
-	return o.settings.CreatedAt.Format(time.RFC3339) // ISO
+func (o *settingsResolver) CreatedAt() DateTime {
+	return DateTime{Time: o.settings.CreatedAt}
 }
 
 func (o *settingsResolver) Author(ctx context.Context) (*UserResolver, error) {
@@ -49,9 +53,15 @@ func (o *settingsResolver) Author(ctx context.Context) (*UserResolver, error) {
 	return &UserResolver{o.user}, nil
 }
 
+var globalSettingsAllowEdits, _ = strconv.ParseBool(env.Get("GLOBAL_SETTINGS_ALLOW_EDITS", "false", "When GLOBAL_SETTINGS_FILE is in use, allow edits in the application to be made which will be overwritten on next process restart"))
+
 // like db.Settings.CreateIfUpToDate, except it handles notifying the
 // query-runner if any saved queries have changed.
 func settingsCreateIfUpToDate(ctx context.Context, subject *settingsSubject, lastID *int32, authorUserID int32, contents string) (latestSetting *api.Settings, err error) {
+	if os.Getenv("GLOBAL_SETTINGS_FILE") != "" && !globalSettingsAllowEdits {
+		return nil, errors.New("Updating global settings not allowed when using GLOBAL_SETTINGS_FILE")
+	}
+
 	// Read current saved queries.
 	var oldSavedQueries api.PartialConfigSavedQueries
 	if err := subject.readSettings(ctx, &oldSavedQueries); err != nil {
@@ -62,39 +72,6 @@ func settingsCreateIfUpToDate(ctx context.Context, subject *settingsSubject, las
 	latestSettings, err := db.Settings.CreateIfUpToDate(ctx, subject.toSubject(), lastID, &authorUserID, contents)
 	if err != nil {
 		return nil, err
-	}
-
-	// Read new saved queries.
-	var newSavedQueries api.PartialConfigSavedQueries
-	if err := subject.readSettings(ctx, &newSavedQueries); err != nil {
-		return nil, err
-	}
-
-	// Notify query-runner of any changes.
-	createdOrUpdated := false
-	for i, newQuery := range newSavedQueries.SavedQueries {
-		if i >= len(oldSavedQueries.SavedQueries) {
-			// Created
-			createdOrUpdated = true
-			break
-		}
-		if !newQuery.Equals(oldSavedQueries.SavedQueries[i]) {
-			// Updated or list was re-ordered.
-			createdOrUpdated = true
-			break
-		}
-	}
-	if createdOrUpdated {
-		go queryrunnerapi.Client.SavedQueryWasCreatedOrUpdated(context.Background(), subject.toSubject(), newSavedQueries, false)
-	}
-	for i, deletedQuery := range oldSavedQueries.SavedQueries {
-		if i <= len(newSavedQueries.SavedQueries) {
-			// Not deleted.
-			continue
-		}
-		// Deleted
-		spec := api.SavedQueryIDSpec{Subject: subject.toSubject(), Key: deletedQuery.Key}
-		go queryrunnerapi.Client.SavedQueryWasDeleted(context.Background(), spec, false)
 	}
 
 	return latestSettings, nil

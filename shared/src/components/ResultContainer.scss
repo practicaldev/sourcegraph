@@ -1,12 +1,14 @@
 .result-container {
     position: relative;
-    margin-bottom: 1rem;
-    border-radius: 2px;
-    border: 1px solid #2b3750;
+
+    border: 0 solid var(--border-color);
+    border-top-width: 1px;
+    &:last-child {
+        border-bottom-width: 1px;
+    }
 
     &__header {
         padding: 0.5rem 0.5rem;
-        user-select: none;
 
         position: sticky;
         top: 0;
@@ -14,11 +16,9 @@
         display: flex;
         align-items: center;
         white-space: nowrap;
-        $background-color: #1c2736;
+        $background-color: $card-cap-bg;
 
         background-color: $background-color;
-
-        z-index: 99;
 
         &--collapsible {
             cursor: pointer;
@@ -30,21 +30,12 @@
             overflow: hidden;
         }
 
-        &:hover {
-            background-color: darken($background-color, 0.05);
-        }
-
         p {
             margin-bottom: 0;
         }
 
         &:not(:only-of-type) {
-            border-bottom: 1px solid #2a3a51;
-        }
-
-        .theme-light & {
-            background-color: $color-light-bg-1;
-            border-color: $color-light-border;
+            border-bottom: 1px solid var(--border-color);
         }
     }
 
@@ -58,17 +49,6 @@
 }
 
 .theme-light {
-    .result-container {
-        border: 1px solid $color-light-border;
-        &__header {
-            background-color: $color-light-bg-2;
-
-            &:hover {
-                background-color: $color-light-bg-4;
-            }
-        }
-    }
-
     .icon-inline__filtered {
         filter: brightness(0%);
     }

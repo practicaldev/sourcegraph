@@ -24,14 +24,12 @@ export class SiteAdminPingsPage extends React.Component<Props, State> {
     }
 
     public render(): JSX.Element | null {
-        const pingsEnabled = window.context.critical['update.channel'] === 'release'
+        const pingsEnabled = window.context.site['update.channel'] === 'release'
 
         return (
             <div className="site-admin-pings-page">
                 <PageTitle title="Pings - Admin" />
-                <div className="d-flex justify-content-between align-items-center mt-3 mb-1">
-                    <h2 className="mb-0">Pings</h2>
-                </div>
+                <h2>Pings</h2>
                 <p>
                     Sourcegraph periodically sends a ping to Sourcegraph.com to help our product and customer teams. It
                     sends only the high-level data below. It never sends code, repository names, usernames, or any other
@@ -47,8 +45,12 @@ export class SiteAdminPingsPage extends React.Component<Props, State> {
                         know who to contact regarding sales, product updates, and policy updates
                     </li>
                     <li>
-                        Which category of authentication provider is in use (built-in, OpenID Connect, an HTTP proxy, or
-                        SAML)
+                        Which category of authentication provider is in use (built-in, OpenID Connect, an HTTP proxy,
+                        SAML, GitHub, GitLab)
+                    </li>
+                    <li>
+                        Which categories of external service are in use (GitHub, Bitbucket Server, GitLab, Phabricator,
+                        Gitolite, AWS CodeCommit, Other)
                     </li>
                     <li>Whether new user signup is allowed (true/false)</li>
                     <li>Whether a repository has ever been added (true/false)</li>
@@ -57,13 +59,26 @@ export class SiteAdminPingsPage extends React.Component<Props, State> {
                     <li>Total count of existing user accounts</li>
                     <li>Aggregate counts of current daily, weekly, and monthly users</li>
                     <li>Aggregate counts of current users using code host integrations</li>
+                    <li>
+                        Aggregate counts of current users by product feature (site management, code search and
+                        navigation, code review, saved searches, diff searches)
+                    </li>
+                    <li>
+                        Aggregate daily, weekly, and monthly latencies (in ms) of code intelligence events (e.g., hover
+                        tooltips) and search queries
+                    </li>
+                    <li>
+                        Aggregate daily, weekly, and monthly total counts of code intelligence events (e.g., hover
+                        tooltips)
+                    </li>
+                    <li>Total count of code campaigns created</li>
                 </ul>
                 {!pingsEnabled ? (
                     <p>Pings are disabled.</p>
                 ) : (
                     <p>
-                        To disable pings (for customers only),{' '}
-                        <a href="https://about.sourcegraph.com/contact/" target="_blank">
+                        To disable pings please {/* eslint-disable-next-line react/jsx-no-target-blank */}
+                        <a href="https://about.sourcegraph.com/contact/" target="_blank" rel="noopener">
                             contact support
                         </a>
                         .

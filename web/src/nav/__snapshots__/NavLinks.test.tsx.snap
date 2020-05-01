@@ -3,29 +3,20 @@
 exports[`NavLinks authed Sourcegraph.com /foo 1`] = `
 Array [
   "Search /search",
-  "Welcome /welcome",
-  "ActionsNavItems",
+  "WebActionsNavItems",
   "Explore /explore",
-  "CommandListPopoverButton",
+  "CampaignsNavItem",
+  "WebCommandListPopoverButton",
   "UserNavItem",
 ]
 `;
 
 exports[`NavLinks authed Sourcegraph.com /search 1`] = `
 Array [
-  "Welcome /welcome",
-  "ActionsNavItems",
+  "WebActionsNavItems",
   "Explore /explore",
-  "CommandListPopoverButton",
-  "UserNavItem",
-]
-`;
-
-exports[`NavLinks authed Sourcegraph.com /welcome 1`] = `
-Array [
-  "Docs https://docs.sourcegraph.com",
-  "ActionsNavItems",
-  "Explore /explore",
+  "CampaignsNavItem",
+  "WebCommandListPopoverButton",
   "UserNavItem",
 ]
 `;
@@ -33,26 +24,20 @@ Array [
 exports[`NavLinks authed self-hosted /foo 1`] = `
 Array [
   "Search /search",
-  "ActionsNavItems",
+  "WebActionsNavItems",
   "Explore /explore",
-  "CommandListPopoverButton",
+  "CampaignsNavItem",
+  "WebCommandListPopoverButton",
   "UserNavItem",
 ]
 `;
 
 exports[`NavLinks authed self-hosted /search 1`] = `
 Array [
-  "ActionsNavItems",
+  "WebActionsNavItems",
   "Explore /explore",
-  "CommandListPopoverButton",
-  "UserNavItem",
-]
-`;
-
-exports[`NavLinks authed self-hosted /welcome 1`] = `
-Array [
-  "ActionsNavItems",
-  "Explore /explore",
+  "CampaignsNavItem",
+  "WebCommandListPopoverButton",
   "UserNavItem",
 ]
 `;
@@ -60,66 +45,49 @@ Array [
 exports[`NavLinks unauthed Sourcegraph.com /foo 1`] = `
 Array [
   "Search /search",
-  "Welcome /welcome",
-  "ActionsNavItems",
-  "Explore /explore",
+  "WebActionsNavItems",
+  "CampaignsNavItem",
   "Extensions /extensions",
   "Sign in /sign-in",
   "About https://about.sourcegraph.com",
   "Help /help",
-  "CommandListPopoverButton",
+  "WebCommandListPopoverButton",
 ]
 `;
 
 exports[`NavLinks unauthed Sourcegraph.com /search 1`] = `
 Array [
-  "Welcome /welcome",
-  "ActionsNavItems",
-  "Explore /explore",
+  "WebActionsNavItems",
+  "CampaignsNavItem",
   "Extensions /extensions",
   "Sign in /sign-in",
   "About https://about.sourcegraph.com",
   "Help /help",
-  "CommandListPopoverButton",
-]
-`;
-
-exports[`NavLinks unauthed Sourcegraph.com /welcome 1`] = `
-Array [
-  "Docs https://docs.sourcegraph.com",
-  "ActionsNavItems",
-  "Sign in /sign-in",
-  "About https://about.sourcegraph.com",
+  "WebCommandListPopoverButton",
 ]
 `;
 
 exports[`NavLinks unauthed self-hosted /foo 1`] = `
 Array [
   "Search /search",
-  "ActionsNavItems",
+  "WebActionsNavItems",
   "Explore /explore",
+  "CampaignsNavItem",
   "Extensions /extensions",
   "Sign in /sign-in",
   "Help /help",
-  "CommandListPopoverButton",
+  "WebCommandListPopoverButton",
 ]
 `;
 
 exports[`NavLinks unauthed self-hosted /search 1`] = `
 Array [
-  "ActionsNavItems",
+  "WebActionsNavItems",
   "Explore /explore",
+  "CampaignsNavItem",
   "Extensions /extensions",
   "Sign in /sign-in",
   "Help /help",
-  "CommandListPopoverButton",
-]
-`;
-
-exports[`NavLinks unauthed self-hosted /welcome 1`] = `
-Array [
-  "ActionsNavItems",
-  "Explore /explore",
-  "Sign in /sign-in",
+  "WebCommandListPopoverButton",
 ]
 `;

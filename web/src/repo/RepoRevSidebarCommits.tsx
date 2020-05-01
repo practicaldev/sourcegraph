@@ -14,20 +14,18 @@ import { gitCommitFragment } from './commits/RepositoryCommitsPage'
 
 interface CommitNodeProps {
     node: GQL.IGitCommit
-    repoName: string
     location: H.Location
 }
 
-const CommitNode: React.FunctionComponent<CommitNodeProps> = ({ node, repoName, location }) => (
+const CommitNode: React.FunctionComponent<CommitNodeProps> = ({ node, location }) => (
     <li className="list-group-item p-0">
         <GitCommitNode
             compact={true}
             node={node}
             hideExpandCommitMessageBody={true}
-            repoName={repoName}
             afterElement={
                 <Link
-                    to={replaceRevisionInURL(location.pathname + location.search + location.hash, node.oid as string)}
+                    to={replaceRevisionInURL(location.pathname + location.search + location.hash, node.oid)}
                     className="ml-2"
                     title="View current file at this commit"
                 >
@@ -40,7 +38,6 @@ const CommitNode: React.FunctionComponent<CommitNodeProps> = ({ node, repoName, 
 
 interface Props {
     repoID: GQL.ID
-    repoName: string
     rev: string | undefined
     filePath: string
     history: H.History
@@ -50,22 +47,17 @@ interface Props {
 export class RepoRevSidebarCommits extends React.PureComponent<Props> {
     public render(): JSX.Element | null {
         return (
-            <FilteredConnection<GQL.IGitCommit, Pick<CommitNodeProps, 'repoName' | 'location'>>
+            <FilteredConnection<GQL.IGitCommit, Pick<CommitNodeProps, 'location'>>
                 className="list-group list-group-flush"
                 compact={true}
                 noun="commit"
                 pluralNoun="commits"
                 queryConnection={this.fetchCommits}
                 nodeComponent={CommitNode}
-                nodeComponentProps={
-                    { repoName: this.props.repoName, location: this.props.location } as Pick<
-                        CommitNodeProps,
-                        'repoName' | 'location'
-                    >
-                }
+                nodeComponentProps={{ location: this.props.location }}
                 defaultFirst={100}
                 hideSearch={true}
-                shouldUpdateURLQuery={false}
+                useURLQuery={false}
                 history={this.props.history}
                 location={this.props.location}
             />
@@ -85,6 +77,7 @@ function fetchCommits(
         gql`
             query FetchCommits($repo: ID!, $rev: String!, $first: Int, $currentPath: String, $query: String) {
                 node(id: $repo) {
+                    __typename
                     ... on Repository {
                         commit(rev: $rev) {
                             ancestors(first: $first, query: $query, path: $currentPath) {
@@ -102,10 +95,10 @@ function fetchCommits(
     ).pipe(
         map(dataOrThrowErrors),
         map(data => {
-            if (!data.node || !(data.node as GQL.IRepository).commit) {
+            if (!data.node || data.node.__typename !== 'Repository' || !data.node.commit) {
                 throw createInvalidGraphQLQueryResponseError('FetchCommits')
             }
-            return (data.node as GQL.IRepository).commit!.ancestors
+            return data.node.commit.ancestors
         })
     )
 }

@@ -3,68 +3,85 @@ import { isEqual } from 'lodash'
 import * as React from 'react'
 import { concat, Observable, Subject, Subscription } from 'rxjs'
 import { catchError, distinctUntilChanged, filter, map, startWith, switchMap, tap } from 'rxjs/operators'
-import { parseSearchURLQuery } from '..'
-import { EvaluatedContributions } from '../../../../shared/src/api/protocol'
+import {
+    parseSearchURLQuery,
+    parseSearchURLPatternType,
+    PatternTypeProps,
+    InteractiveSearchProps,
+    CaseSensitivityProps,
+    parseSearchURL,
+} from '..'
+import { Contributions, Evaluated } from '../../../../shared/src/api/protocol'
 import { FetchFileCtx } from '../../../../shared/src/components/CodeExcerpt'
 import { ExtensionsControllerProps } from '../../../../shared/src/extensions/controller'
 import * as GQL from '../../../../shared/src/graphql/schema'
+import { PlatformContextProps } from '../../../../shared/src/platform/context'
 import { isSettingsValid, SettingsCascadeProps } from '../../../../shared/src/settings/settings'
-import { ErrorLike, isErrorLike } from '../../../../shared/src/util/errors'
+import { TelemetryProps } from '../../../../shared/src/telemetry/telemetryService'
+import { ErrorLike, isErrorLike, asError } from '../../../../shared/src/util/errors'
 import { PageTitle } from '../../components/PageTitle'
 import { Settings } from '../../schema/settings.schema'
-import { ThemeProps } from '../../theme'
+import { ThemeProps } from '../../../../shared/src/theme'
 import { EventLogger } from '../../tracking/eventLogger'
-import { FilterChip } from '../FilterChip'
-import {
-    isSearchResults,
-    submitSearch,
-    toggleSearchFilter,
-    toggleSearchFilterAndReplaceSampleRepogroup,
-} from '../helpers'
+import { isSearchResults, submitSearch, toggleSearchFilter, getSearchTypeFromQuery, QueryState } from '../helpers'
 import { queryTelemetryData } from '../queryTelemetry'
+import { SearchResultsFilterBars, SearchScopeWithOptionalName } from './SearchResultsFilterBars'
 import { SearchResultsList } from './SearchResultsList'
+import { SearchResultTypeTabs } from './SearchResultTypeTabs'
+import { buildSearchURLQuery } from '../../../../shared/src/util/url'
+import { convertPlainTextToInteractiveQuery } from '../input/helpers'
 
-const UI_PAGE_SIZE = 75
-
-interface SearchResultsProps extends ExtensionsControllerProps<'services'>, SettingsCascadeProps, ThemeProps {
+export interface SearchResultsProps
+    extends ExtensionsControllerProps<'executeCommand' | 'services'>,
+        PlatformContextProps<'forceUpdateTooltip' | 'settings'>,
+        SettingsCascadeProps,
+        TelemetryProps,
+        ThemeProps,
+        PatternTypeProps,
+        CaseSensitivityProps,
+        InteractiveSearchProps {
     authenticatedUser: GQL.IUser | null
     location: H.Location
     history: H.History
-    navbarSearchQuery: string
-    eventLogger: Pick<EventLogger, 'log' | 'logViewEvent'>
+    navbarSearchQueryState: QueryState
+    telemetryService: Pick<EventLogger, 'log' | 'logViewEvent'>
     fetchHighlightedFileLines: (ctx: FetchFileCtx, force?: boolean) => Observable<string[]>
     searchRequest: (
         query: string,
+        version: string,
+        patternType: GQL.SearchPatternType,
         { extensionsController }: ExtensionsControllerProps<'services'>
     ) => Observable<GQL.ISearchResults | ErrorLike>
     isSourcegraphDotCom: boolean
+    deployType: DeployType
 }
 
-interface SearchScope {
-    name?: string
-    value: string
-}
 interface SearchResultsState {
     /** The loaded search results, error or undefined while loading */
     resultsOrError?: GQL.ISearchResults
     allExpanded: boolean
 
-    // TODO: Remove when newSearchResultsList is removed
-    uiLimit: number
-
     // Saved Queries
     showSavedQueryModal: boolean
     didSaveQuery: boolean
+
     /** The contributions, merged from all extensions, or undefined before the initial emission. */
-    contributions?: EvaluatedContributions
+    contributions?: Evaluated<Contributions>
 }
+
+/** All values that are valid for the `type:` filter. `null` represents default code search. */
+export type SearchType = 'diff' | 'commit' | 'symbol' | 'repo' | 'path' | null
+
+// The latest supported version of our search syntax. Users should never be able to determine the search version.
+// The version is set based on the release tag of the instance. Anything before 3.9.0 will not pass a version parameter,
+// and will therefore default to V1.
+const LATEST_VERSION = 'V2'
 
 export class SearchResults extends React.Component<SearchResultsProps, SearchResultsState> {
     public state: SearchResultsState = {
         didSaveQuery: false,
         showSavedQueryModal: false,
         allExpanded: false,
-        uiLimit: UI_PAGE_SIZE,
     }
     /** Emits on componentDidUpdate with the new props */
     private componentUpdates = new Subject<SearchResultsProps>()
@@ -72,64 +89,124 @@ export class SearchResults extends React.Component<SearchResultsProps, SearchRes
     private subscriptions = new Subscription()
 
     public componentDidMount(): void {
-        this.props.eventLogger.logViewEvent('SearchResults')
+        const patternType = parseSearchURLPatternType(this.props.location.search)
+
+        if (!patternType) {
+            // If the patternType query parameter does not exist in the URL or is invalid, redirect to a URL which
+            // has patternType=regexp appended. This is to ensure old URLs before requiring patternType still work.
+
+            const q = parseSearchURLQuery(this.props.location.search) || ''
+            const { navbarQuery, filtersInQuery } = convertPlainTextToInteractiveQuery(q)
+            const newLoc =
+                '/search?' +
+                buildSearchURLQuery(navbarQuery, GQL.SearchPatternType.regexp, this.props.caseSensitive, filtersInQuery)
+            window.location.replace(newLoc)
+        }
+
+        this.props.telemetryService.logViewEvent('SearchResults')
 
         this.subscriptions.add(
             this.componentUpdates
                 .pipe(
                     startWith(this.props),
-                    map(props => parseSearchURLQuery(props.location.search)),
+                    map(props => parseSearchURL(props.location.search)),
                     // Search when a new search query was specified in the URL
                     distinctUntilChanged((a, b) => isEqual(a, b)),
-                    filter((query): query is string => !!query),
-                    tap(query => {
-                        this.props.eventLogger.log('SearchResultsQueried', {
-                            code_search: { query_data: queryTelemetryData(query) },
+                    filter(
+                        (
+                            queryAndPatternTypeAndCase
+                        ): queryAndPatternTypeAndCase is {
+                            query: string
+                            patternType: GQL.SearchPatternType
+                            caseSensitive: boolean
+                        } => !!queryAndPatternTypeAndCase.query && !!queryAndPatternTypeAndCase.patternType
+                    ),
+                    tap(({ query, caseSensitive }) => {
+                        const query_data = queryTelemetryData(query, caseSensitive)
+                        this.props.telemetryService.log('SearchResultsQueried', {
+                            code_search: { query_data },
+                            ...(this.props.splitSearchModes
+                                ? { mode: this.props.interactiveSearchMode ? 'interactive' : 'plain' }
+                                : {}),
                         })
+                        if (
+                            query_data.query &&
+                            query_data.query.field_type &&
+                            query_data.query.field_type.value_diff > 0
+                        ) {
+                            this.props.telemetryService.log('DiffSearchResultsQueried')
+                        }
                     }),
-                    switchMap(query =>
+                    switchMap(({ query, patternType, caseSensitive }) =>
                         concat(
                             // Reset view state
-                            [{ resultsOrError: undefined, didSave: false }],
+                            [
+                                {
+                                    resultsOrError: undefined,
+                                    didSave: false,
+                                    activeType: getSearchTypeFromQuery(query),
+                                },
+                            ],
                             // Do async search request
-                            this.props.searchRequest(query, this.props).pipe(
-                                // Log telemetry
-                                tap(
-                                    results =>
-                                        this.props.eventLogger.log('SearchResultsFetched', {
-                                            code_search: {
-                                                // 🚨 PRIVACY: never provide any private data in { code_search: { results } }.
-                                                results: {
-                                                    results_count: isErrorLike(results) ? 0 : results.results.length,
-                                                    any_cloning: isErrorLike(results)
-                                                        ? false
-                                                        : results.cloning.length > 0,
+                            this.props
+                                .searchRequest(
+                                    caseSensitive ? `${query} case:yes` : query,
+                                    LATEST_VERSION,
+                                    patternType,
+                                    this.props
+                                )
+                                .pipe(
+                                    // Log telemetry
+                                    tap(
+                                        results => {
+                                            this.props.telemetryService.log('SearchResultsFetched', {
+                                                code_search: {
+                                                    // 🚨 PRIVACY: never provide any private data in { code_search: { results } }.
+                                                    results: {
+                                                        results_count: isErrorLike(results)
+                                                            ? 0
+                                                            : results.results.length,
+                                                        any_cloning: isErrorLike(results)
+                                                            ? false
+                                                            : results.cloning.length > 0,
+                                                    },
                                                 },
-                                            },
-                                        }),
-                                    error => {
-                                        this.props.eventLogger.log('SearchResultsFetchFailed', {
-                                            code_search: { error_message: error.message },
-                                        })
-                                        console.error(error)
-                                    }
-                                ),
-                                // Update view with results or error
-                                map(results => ({ resultsOrError: results })),
-                                catchError(error => [{ resultsOrError: error }])
-                            )
+                                            })
+                                            if (patternType && patternType !== this.props.patternType) {
+                                                this.props.setPatternType(patternType)
+                                            }
+                                            if (caseSensitive !== this.props.caseSensitive) {
+                                                this.props.setCaseSensitivity(caseSensitive)
+                                            }
+                                        },
+                                        error => {
+                                            this.props.telemetryService.log('SearchResultsFetchFailed', {
+                                                code_search: { error_message: asError(error).message },
+                                            })
+                                            console.error(error)
+                                        }
+                                    ),
+                                    // Update view with results or error
+                                    map(resultsOrError => ({ resultsOrError })),
+                                    catchError(error => [{ resultsOrError: error }])
+                                )
                         )
                     )
                 )
-                .subscribe(newState => this.setState(newState as SearchResultsState), err => console.error(err))
+                .subscribe(
+                    newState => this.setState(newState as SearchResultsState),
+                    err => console.error(err)
+                )
         )
 
-        this.props.extensionsController.services.contribution
-            .getContributions()
-            .subscribe(contributions => this.setState({ contributions }))
+        this.subscriptions.add(
+            this.props.extensionsController.services.contribution
+                .getContributions()
+                .subscribe(contributions => this.setState({ contributions }))
+        )
     }
 
-    public componentDidUpdate(prevProps: SearchResultsProps): void {
+    public componentDidUpdate(): void {
         this.componentUpdates.next(this.props)
     }
 
@@ -137,17 +214,17 @@ export class SearchResults extends React.Component<SearchResultsProps, SearchRes
         this.subscriptions.unsubscribe()
     }
 
-    private showSaveQueryModal = () => {
+    private showSaveQueryModal = (): void => {
         this.setState({ showSavedQueryModal: true, didSaveQuery: false })
     }
 
-    private onDidCreateSavedQuery = () => {
-        this.props.eventLogger.log('SavedQueryCreated')
+    private onDidCreateSavedQuery = (): void => {
+        this.props.telemetryService.log('SavedQueryCreated')
         this.setState({ showSavedQueryModal: false, didSaveQuery: true })
     }
 
-    private onModalClose = () => {
-        this.props.eventLogger.log('SavedQueriesToggleCreating', { queries: { creating: false } })
+    private onModalClose = (): void => {
+        this.props.telemetryService.log('SavedQueriesToggleCreating', { queries: { creating: false } })
         this.setState({ didSaveQuery: false, showSavedQueryModal: false })
     }
 
@@ -156,72 +233,31 @@ export class SearchResults extends React.Component<SearchResultsProps, SearchRes
         const filters = this.getFilters()
         const extensionFilters = this.state.contributions && this.state.contributions.searchFilters
 
+        const quickLinks =
+            (isSettingsValid<Settings>(this.props.settingsCascade) && this.props.settingsCascade.final.quicklinks) || []
+
         return (
-            <div className="search-results">
+            <div className="e2e-search-results search-results d-flex flex-column w-100">
                 <PageTitle key="page-title" title={query} />
-                {((isSearchResults(this.state.resultsOrError) && filters.length > 0) || extensionFilters) && (
-                    <div className="search-results__filters-bar" data-testid="filters-bar">
-                        Filters:
-                        <div className="search-results__filters">
-                            {extensionFilters &&
-                                extensionFilters
-                                    .filter(filter => filter.value !== '')
-                                    .map((filter, i) => (
-                                        <FilterChip
-                                            query={this.props.navbarSearchQuery}
-                                            onFilterChosen={this.onDynamicFilterClicked}
-                                            key={filter.name + filter.value}
-                                            value={filter.value}
-                                            name={filter.name}
-                                        />
-                                    ))}
-                            {filters
-                                .filter(filter => filter.value !== '')
-                                .map((filter, i) => (
-                                    <FilterChip
-                                        query={this.props.navbarSearchQuery}
-                                        onFilterChosen={this.onDynamicFilterClicked}
-                                        key={filter.name + filter.value}
-                                        value={filter.value}
-                                        name={filter.name}
-                                    />
-                                ))}
-                        </div>
-                    </div>
+                {!this.props.interactiveSearchMode && (
+                    <SearchResultsFilterBars
+                        navbarSearchQuery={this.props.navbarSearchQueryState.query}
+                        results={this.state.resultsOrError}
+                        filters={filters}
+                        extensionFilters={extensionFilters}
+                        quickLinks={quickLinks}
+                        onFilterClick={this.onDynamicFilterClicked}
+                        onShowMoreResultsClick={this.showMoreResults}
+                        calculateShowMoreResultsCount={this.calculateCount}
+                    />
                 )}
-                {isSearchResults(this.state.resultsOrError) &&
-                    this.state.resultsOrError.dynamicFilters.filter(filter => filter.kind === 'repo').length > 0 && (
-                        <div className="search-results__filters-bar" data-testid="repo-filters-bar">
-                            Repositories:
-                            <div className="search-results__filters">
-                                {this.state.resultsOrError.dynamicFilters
-                                    .filter(filter => filter.kind === 'repo' && filter.value !== '')
-                                    .map((filter, i) => (
-                                        <FilterChip
-                                            name={filter.label}
-                                            query={this.props.navbarSearchQuery}
-                                            onFilterChosen={this.onDynamicFilterClicked}
-                                            key={filter.value}
-                                            value={filter.value}
-                                            count={filter.count}
-                                            limitHit={filter.limitHit}
-                                        />
-                                    ))}
-                                {this.state.resultsOrError.limitHit &&
-                                    !/\brepo:/.test(this.props.navbarSearchQuery) && (
-                                        <FilterChip
-                                            name="Show more"
-                                            query={this.props.navbarSearchQuery}
-                                            onFilterChosen={this.showMoreResults}
-                                            key={`count:${this.calculateCount()}`}
-                                            value={`count:${this.calculateCount()}`}
-                                            showMore={true}
-                                        />
-                                    )}
-                            </div>
-                        </div>
-                    )}
+                <SearchResultTypeTabs
+                    {...this.props}
+                    query={this.props.navbarSearchQueryState.query}
+                    filtersInQuery={this.props.filtersInQuery}
+                />
                 <SearchResultsList
+                    {...this.props}
                     resultsOrError={this.state.resultsOrError}
                     onShowMoreResultsClick={this.showMoreResults}
                     onExpandAllResultsToggle={this.onExpandAllResultsToggle}
@@ -231,21 +267,14 @@ export class SearchResults extends React.Component<SearchResultsProps, SearchRes
                     onSavedQueryModalClose={this.onModalClose}
                     onDidCreateSavedQuery={this.onDidCreateSavedQuery}
                     didSave={this.state.didSaveQuery}
-                    location={this.props.location}
-                    history={this.props.history}
-                    authenticatedUser={this.props.authenticatedUser}
-                    settingsCascade={this.props.settingsCascade}
-                    isLightTheme={this.props.isLightTheme}
-                    isSourcegraphDotCom={this.props.isSourcegraphDotCom}
-                    fetchHighlightedFileLines={this.props.fetchHighlightedFileLines}
                 />
             </div>
         )
     }
 
     /** Combines dynamic filters and search scopes into a list de-duplicated by value. */
-    private getFilters(): SearchScope[] {
-        const filters = new Map<string, SearchScope>()
+    private getFilters(): SearchScopeWithOptionalName[] {
+        const filters = new Map<string, SearchScopeWithOptionalName>()
 
         if (isSearchResults(this.state.resultsOrError) && this.state.resultsOrError.dynamicFilters) {
             let dynamicFilters = this.state.resultsOrError.dynamicFilters
@@ -279,7 +308,7 @@ export class SearchResults extends React.Component<SearchResultsProps, SearchRes
 
         return Array.from(filters.values())
     }
-    private showMoreResults = () => {
+    private showMoreResults = (): void => {
         // Requery with an increased max result count.
         const params = new URLSearchParams(this.props.location.search)
         let query = params.get('q') || ''
@@ -303,29 +332,27 @@ export class SearchResults extends React.Component<SearchResultsProps, SearchRes
         const query = params.get('q') || ''
 
         if (/count:(\d+)/.test(query)) {
-            return Math.max(results.resultCount * 2, 1000)
+            return Math.max(results.matchCount * 2, 1000)
         }
-        return Math.max(results.resultCount * 2 || 0, 1000)
+        return Math.max(results.matchCount * 2 || 0, 1000)
     }
 
-    private onExpandAllResultsToggle = () => {
+    private onExpandAllResultsToggle = (): void => {
         this.setState(
             state => ({ allExpanded: !state.allExpanded }),
             () => {
-                this.props.eventLogger.log(this.state.allExpanded ? 'allResultsExpanded' : 'allResultsCollapsed')
+                this.props.telemetryService.log(this.state.allExpanded ? 'allResultsExpanded' : 'allResultsCollapsed')
             }
         )
     }
 
-    private onDynamicFilterClicked = (value: string) => {
-        this.props.eventLogger.log('DynamicFilterClicked', {
+    private onDynamicFilterClicked = (value: string): void => {
+        this.props.telemetryService.log('DynamicFilterClicked', {
             search_filter: { value },
         })
 
-        const newQuery = this.props.isSourcegraphDotCom
-            ? toggleSearchFilterAndReplaceSampleRepogroup(this.props.navbarSearchQuery, value)
-            : toggleSearchFilter(this.props.navbarSearchQuery, value)
+        const newQuery = toggleSearchFilter(this.props.navbarSearchQueryState.query, value)
 
-        submitSearch(this.props.history, newQuery, 'filter')
+        submitSearch({ ...this.props, query: newQuery, source: 'filter' })
     }
 }

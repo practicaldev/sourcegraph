@@ -1,15 +1,15 @@
 import * as H from 'history'
-import { isEqual, pick, upperFirst } from 'lodash'
+import { isEqual, pick } from 'lodash'
 import AlertCircleIcon from 'mdi-react/AlertCircleIcon'
 import * as React from 'react'
 import { combineLatest, Observable, Subject, Subscription } from 'rxjs'
 import { catchError, distinctUntilChanged, map, mapTo, startWith, switchMap, tap } from 'rxjs/operators'
 import { ExtensionsControllerProps } from '../../../../shared/src/extensions/controller'
-import { gql } from '../../../../shared/src/graphql/graphql'
+import { gql, dataOrThrowErrors } from '../../../../shared/src/graphql/graphql'
 import * as GQL from '../../../../shared/src/graphql/schema'
 import { PlatformContextProps } from '../../../../shared/src/platform/context'
 import { SettingsCascadeProps } from '../../../../shared/src/settings/settings'
-import { createAggregateError, ErrorLike, isErrorLike } from '../../../../shared/src/util/errors'
+import { ErrorLike, isErrorLike, asError } from '../../../../shared/src/util/errors'
 import { memoizeObservable } from '../../../../shared/src/util/memoizeObservable'
 import {
     AbsoluteRepoFile,
@@ -22,24 +22,26 @@ import {
 import { queryGraphQL } from '../../backend/graphql'
 import { HeroPage } from '../../components/HeroPage'
 import { PageTitle } from '../../components/PageTitle'
-import { isDiscussionsEnabled } from '../../discussions'
-import { ThemeProps } from '../../theme'
-import { eventLogger } from '../../tracking/eventLogger'
+import { eventLogger, EventLoggerProps } from '../../tracking/eventLogger'
 import { RepoHeaderContributionsLifecycleProps } from '../RepoHeader'
 import { RepoHeaderContributionPortal } from '../RepoHeaderContributionPortal'
-import { ToggleDiscussionsPanel } from './actions/ToggleDiscussions'
 import { ToggleHistoryPanel } from './actions/ToggleHistoryPanel'
 import { ToggleLineWrap } from './actions/ToggleLineWrap'
 import { ToggleRenderedFileMode } from './actions/ToggleRenderedFileMode'
 import { Blob } from './Blob'
 import { BlobPanel } from './panel/BlobPanel'
+import { GoToRawAction } from './GoToRawAction'
 import { RenderedFile } from './RenderedFile'
+import { ThemeProps } from '../../../../shared/src/theme'
+import { ErrorMessage } from '../../components/alerts'
+import { Redirect } from 'react-router'
+import { toTreeURL } from '../../util/url'
 
-export function fetchBlobCacheKey(parsed: ParsedRepoURI & { isLightTheme: boolean; disableTimeout: boolean }): string {
-    return makeRepoURI(parsed) + parsed.isLightTheme + parsed.disableTimeout
+function fetchBlobCacheKey(parsed: ParsedRepoURI & { isLightTheme: boolean; disableTimeout: boolean }): string {
+    return makeRepoURI(parsed) + String(parsed.isLightTheme) + String(parsed.disableTimeout)
 }
 
-export const fetchBlob = memoizeObservable(
+const fetchBlob = memoizeObservable(
     (args: {
         repoName: string
         commitID: string
@@ -72,15 +74,10 @@ export const fetchBlob = memoizeObservable(
             `,
             args
         ).pipe(
-            map(({ data, errors }) => {
-                if (
-                    !data ||
-                    !data.repository ||
-                    !data.repository.commit ||
-                    !data.repository.commit.file ||
-                    !data.repository.commit.file.highlight
-                ) {
-                    throw createAggregateError(errors)
+            map(dataOrThrowErrors),
+            map(data => {
+                if (!data.repository?.commit?.file?.highlight) {
+                    throw new Error('Not found')
                 }
                 return data.repository.commit.file
             })
@@ -94,6 +91,7 @@ interface Props
         RepoHeaderContributionsLifecycleProps,
         SettingsCascadeProps,
         PlatformContextProps,
+        EventLoggerProps,
         ExtensionsControllerProps,
         ThemeProps {
     location: H.Location
@@ -112,6 +110,7 @@ interface State {
     blobOrError?: GQL.IGitBlob | ErrorLike
 }
 
+// eslint-disable-next-line react/no-unsafe
 export class BlobPage extends React.PureComponent<Props, State> {
     private propsUpdates = new Subject<Props>()
     private extendHighlightingTimeoutClicks = new Subject<void>()
@@ -126,7 +125,7 @@ export class BlobPage extends React.PureComponent<Props, State> {
     }
 
     private logViewEvent(): void {
-        eventLogger.logViewEvent('Blob', { fileShown: true })
+        eventLogger.logViewEvent('Blob')
     }
 
     public componentDidMount(): void {
@@ -134,16 +133,13 @@ export class BlobPage extends React.PureComponent<Props, State> {
 
         // Fetch repository revision.
         this.subscriptions.add(
-            combineLatest(
+            combineLatest([
                 this.propsUpdates.pipe(
                     map(props => pick(props, 'repoName', 'commitID', 'filePath', 'isLightTheme')),
                     distinctUntilChanged((a, b) => isEqual(a, b))
                 ),
-                this.extendHighlightingTimeoutClicks.pipe(
-                    mapTo(true),
-                    startWith(false)
-                )
-            )
+                this.extendHighlightingTimeoutClicks.pipe(mapTo(true), startWith(false)),
+            ])
                 .pipe(
                     tap(() => this.setState({ blobOrError: undefined })),
                     switchMap(([{ repoName, commitID, filePath, isLightTheme }, extendHighlightingTimeout]) =>
@@ -154,35 +150,35 @@ export class BlobPage extends React.PureComponent<Props, State> {
                             isLightTheme,
                             disableTimeout: extendHighlightingTimeout,
                         }).pipe(
-                            catchError(error => {
+                            catchError((error): [ErrorLike] => {
                                 console.error(error)
-                                return [error]
+                                return [asError(error)]
                             })
                         )
                     )
                 )
-                .subscribe(blobOrError => this.setState({ blobOrError }), err => console.error(err))
+                .subscribe(
+                    blobOrError => this.setState({ blobOrError }),
+                    err => console.error(err)
+                )
         )
 
         // Clear the Sourcegraph extensions model's component when the blob is no longer shown.
-        this.subscriptions.add(() =>
-            this.props.extensionsController.services.model.model.next({
-                ...this.props.extensionsController.services.model.model.value,
-                visibleViewComponents: null,
-            })
-        )
+        this.subscriptions.add(() => this.props.extensionsController.services.viewer.removeAllViewers())
 
         this.propsUpdates.next(this.props)
     }
 
-    public componentWillReceiveProps(newProps: Props): void {
-        this.propsUpdates.next(newProps)
+    // Use UNSAFE_componentWillReceiveProps to avoid this.state.blobOrError being out of sync
+    // with props (see https://github.com/sourcegraph/sourcegraph/issues/5575).
+    public UNSAFE_componentWillReceiveProps(nextProps: Props): void {
+        this.propsUpdates.next(nextProps)
         if (
-            newProps.repoName !== this.props.repoName ||
-            newProps.commitID !== this.props.commitID ||
-            newProps.filePath !== this.props.filePath ||
-            ToggleRenderedFileMode.getModeFromURL(newProps.location) !==
-                ToggleRenderedFileMode.getModeFromURL(this.props.location)
+            this.props.repoName !== nextProps.repoName ||
+            this.props.commitID !== nextProps.commitID ||
+            this.props.filePath !== nextProps.filePath ||
+            ToggleRenderedFileMode.getModeFromURL(this.props.location) !==
+                ToggleRenderedFileMode.getModeFromURL(nextProps.location)
         ) {
             this.logViewEvent()
         }
@@ -193,19 +189,16 @@ export class BlobPage extends React.PureComponent<Props, State> {
     }
 
     public render(): React.ReactNode {
-        if (isErrorLike(this.state.blobOrError)) {
-            return (
-                <HeroPage icon={AlertCircleIcon} title="Error" subtitle={upperFirst(this.state.blobOrError.message)} />
-            )
-        }
-
         let renderMode = ToggleRenderedFileMode.getModeFromURL(this.props.location)
         // If url explicitly asks for a certain rendering mode, renderMode is set to that mode, else it checks:
         // - If file contains richHTML and url does not include a line number: We render in richHTML.
         // - If file does not contain richHTML or the url includes a line number: We render in code view.
         if (!renderMode) {
             renderMode =
-                this.state.blobOrError && this.state.blobOrError.richHTML && !parseHash(this.props.location.hash).line
+                this.state.blobOrError &&
+                !isErrorLike(this.state.blobOrError) &&
+                this.state.blobOrError.richHTML &&
+                !parseHash(this.props.location.hash).line
                     ? 'rendered'
                     : 'code'
         }
@@ -234,22 +227,41 @@ export class BlobPage extends React.PureComponent<Props, State> {
                         repoHeaderContributionsLifecycleProps={this.props.repoHeaderContributionsLifecycleProps}
                     />
                 )}
-                {isDiscussionsEnabled(this.props.settingsCascade) && (
-                    <RepoHeaderContributionPortal
-                        position="right"
-                        priority={20}
-                        element={
-                            <ToggleDiscussionsPanel
-                                key="toggle-blob-discussion-panel"
-                                location={this.props.location}
-                                history={this.props.history}
-                            />
-                        }
-                        repoHeaderContributionsLifecycleProps={this.props.repoHeaderContributionsLifecycleProps}
-                    />
-                )}
+                <RepoHeaderContributionPortal
+                    position="right"
+                    priority={30}
+                    element={
+                        <GoToRawAction
+                            key="raw-action"
+                            repoName={this.props.repoName}
+                            rev={this.props.rev}
+                            filePath={this.props.filePath}
+                        />
+                    }
+                    repoHeaderContributionsLifecycleProps={this.props.repoHeaderContributionsLifecycleProps}
+                />
             </>
         )
+
+        if (isErrorLike(this.state.blobOrError)) {
+            // Be helpful if the URL was actually a tree and redirect.
+            // Some extensions may optimistically construct blob URLs because
+            // they cannot easily determine eagerly if a file path is a tree or a blob.
+            // We don't have error names on GraphQL errors.
+            if (/not a blob/i.test(this.state.blobOrError.message)) {
+                return <Redirect to={toTreeURL(this.props)} />
+            }
+            return (
+                <>
+                    {alwaysRender}
+                    <HeroPage
+                        icon={AlertCircleIcon}
+                        title="Error"
+                        subtitle={<ErrorMessage error={this.state.blobOrError} history={this.props.history} />}
+                    />
+                </>
+            )
+        }
 
         if (!this.state.blobOrError) {
             // Render placeholder for layout before content is fetched.
@@ -274,27 +286,36 @@ export class BlobPage extends React.PureComponent<Props, State> {
                     />
                 )}
                 {this.state.blobOrError.richHTML && renderMode === 'rendered' && (
-                    <RenderedFile dangerousInnerHTML={this.state.blobOrError.richHTML} location={this.props.location} />
-                )}
-                {renderMode === 'code' && !this.state.blobOrError.highlight.aborted && (
-                    <Blob
-                        {...this.props}
-                        className="blob-page__blob"
-                        content={this.state.blobOrError.content}
-                        html={this.state.blobOrError.highlight.html}
-                        wrapCode={this.state.wrapCode}
-                        renderMode={renderMode}
+                    <RenderedFile
+                        dangerousInnerHTML={this.state.blobOrError.richHTML}
+                        location={this.props.location}
+                        history={this.props.history}
                     />
                 )}
                 {!this.state.blobOrError.richHTML && this.state.blobOrError.highlight.aborted && (
                     <div className="blob-page__aborted">
                         <div className="alert alert-info">
                             Syntax-highlighting this file took too long. &nbsp;
-                            <button onClick={this.onExtendHighlightingTimeoutClick} className="btn btn-sm btn-primary">
+                            <button
+                                type="button"
+                                onClick={this.onExtendHighlightingTimeoutClick}
+                                className="btn btn-sm btn-primary"
+                            >
                                 Try again
                             </button>
                         </div>
                     </div>
+                )}
+                {/* Render the (unhighlighted) blob also in the case highlighting timed out */}
+                {renderMode === 'code' && (
+                    <Blob
+                        {...this.props}
+                        className="blob-page__blob e2e-repo-blob"
+                        content={this.state.blobOrError.content}
+                        html={this.state.blobOrError.highlight.html}
+                        wrapCode={this.state.wrapCode}
+                        renderMode={renderMode}
+                    />
                 )}
                 <BlobPanel
                     {...this.props}
@@ -308,15 +329,15 @@ export class BlobPage extends React.PureComponent<Props, State> {
         )
     }
 
-    private onDidUpdateLineWrap = (value: boolean) => this.setState({ wrapCode: value })
+    private onDidUpdateLineWrap = (value: boolean): void => this.setState({ wrapCode: value })
 
-    private onExtendHighlightingTimeoutClick = () => this.extendHighlightingTimeoutClicks.next()
+    private onExtendHighlightingTimeoutClick = (): void => this.extendHighlightingTimeoutClicks.next()
 
     private getPageTitle(): string {
         const repoNameSplit = this.props.repoName.split('/')
         const repoStr = repoNameSplit.length > 2 ? repoNameSplit.slice(1).join('/') : this.props.repoName
         if (this.props.filePath) {
-            const fileOrDir = this.props.filePath.split('/').pop()
+            const fileOrDir = this.props.filePath.split('/').pop()!
             return `${fileOrDir} - ${repoStr}`
         }
         return `${repoStr}`

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -12,10 +14,10 @@ import (
 	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
 
-	"github.com/sourcegraph/sourcegraph/pkg/actor"
-	"github.com/sourcegraph/sourcegraph/pkg/env"
-	"github.com/sourcegraph/sourcegraph/pkg/trace"
-	"github.com/sourcegraph/sourcegraph/pkg/version"
+	"github.com/sourcegraph/sourcegraph/internal/actor"
+	"github.com/sourcegraph/sourcegraph/internal/env"
+	"github.com/sourcegraph/sourcegraph/internal/trace"
+	"github.com/sourcegraph/sourcegraph/internal/version"
 )
 
 var ravenClient *raven.Client
@@ -71,6 +73,8 @@ func reportError(r *http.Request, status int, err error, panicked bool) {
 	addTag := func(key, val string) {
 		pkt.Tags = append(pkt.Tags, raven.Tag{Key: key, Value: val})
 	}
+
+	addTag("service", filepath.Base(os.Args[0]))
 
 	// Add appdash span ID.
 	if span := opentracing.SpanFromContext(r.Context()); span != nil {

@@ -4,8 +4,9 @@ import React from 'react'
 import { ResultContainer } from '../../../shared/src/components/ResultContainer'
 import * as GQL from '../../../shared/src/graphql/schema'
 import { renderMarkdown } from '../../../shared/src/util/markdown'
-import { ThemeProps } from '../theme'
 import { SearchResultMatch } from './SearchResultMatch'
+import { ThemeProps } from '../../../shared/src/theme'
+import * as H from 'history'
 
 export interface HighlightRange {
     /**
@@ -24,14 +25,11 @@ export interface HighlightRange {
 
 interface Props extends ThemeProps {
     result: GQL.GenericSearchResultInterface
+    history: H.History
 }
 
 export class SearchResult extends React.Component<Props> {
-    constructor(props: Props) {
-        super(props)
-    }
-
-    private renderTitle = () => (
+    private renderTitle = (): JSX.Element => (
         <div className="search-result__title">
             <span
                 dangerouslySetInnerHTML={{
@@ -55,9 +53,9 @@ export class SearchResult extends React.Component<Props> {
         </div>
     )
 
-    private renderBody = () => (
+    private renderBody = (): JSX.Element => (
         <>
-            {this.props.result.matches.map((match, index) => {
+            {this.props.result.matches.map(match => {
                 const highlightRanges: HighlightRange[] = []
                 match.highlights.map(highlight =>
                     highlightRanges.push({
@@ -69,10 +67,11 @@ export class SearchResult extends React.Component<Props> {
 
                 return (
                     <SearchResultMatch
-                        key={`item.url#${index}`}
+                        key={match.url}
                         item={match}
                         highlightRanges={highlightRanges}
                         isLightTheme={this.props.isLightTheme}
+                        history={this.props.history}
                     />
                 )
             })}

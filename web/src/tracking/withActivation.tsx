@@ -11,7 +11,7 @@ import {
 import { dataOrThrowErrors, gql } from '../../../shared/src/graphql/graphql'
 import * as GQL from '../../../shared/src/graphql/schema'
 import { queryGraphQL } from '../backend/graphql'
-import { logUserEvent } from '../user/account/backend'
+import { logUserEvent, logEvent } from '../user/settings/backend'
 
 /**
  * Fetches activation status from server.
@@ -20,11 +20,11 @@ const fetchActivationStatus = (isSiteAdmin: boolean): Observable<ActivationCompl
     queryGraphQL(
         isSiteAdmin
             ? gql`
-                  query {
+                  query ActivationStatus {
                       externalServices {
                           totalCount
                       }
-                      repositories(enabled: true) {
+                      repositories {
                           totalCount
                       }
                       viewerSettings {
@@ -43,7 +43,7 @@ const fetchActivationStatus = (isSiteAdmin: boolean): Observable<ActivationCompl
                   }
               `
             : gql`
-                  query {
+                  query ActivationStatus {
                       currentUser {
                           usageStatistics {
                               searchQueries
@@ -67,8 +67,6 @@ const fetchActivationStatus = (isSiteAdmin: boolean): Observable<ActivationCompl
             }
             if (isSiteAdmin) {
                 completed.ConnectedCodeHost = data.externalServices && data.externalServices.totalCount > 0
-                completed.EnabledRepository =
-                    data.repositories && data.repositories.totalCount !== null && data.repositories.totalCount > 0
                 if (authProviders) {
                     completed.EnabledSharing =
                         data.users.totalCount > 1 || authProviders.filter(p => !p.isBuiltin).length > 0
@@ -86,7 +84,7 @@ const fetchActivationStatus = (isSiteAdmin: boolean): Observable<ActivationCompl
 const fetchReferencesLink = (): Observable<string | null> =>
     queryGraphQL(gql`
         query {
-            repositories(enabled: true, cloned: true, first: 100, indexed: true) {
+            repositories(cloned: true, first: 100, indexed: true) {
                 nodes {
                     url
                     gitRefs {
@@ -103,7 +101,7 @@ const fetchReferencesLink = (): Observable<string | null> =>
             }
             const repositoryURLs = data.repositories.nodes
                 .filter(r => r.gitRefs && r.gitRefs.totalCount > 0)
-                .sort((r1, r2) => r2.gitRefs!.totalCount! - r1.gitRefs!.totalCount)
+                .sort((r1, r2) => r2.gitRefs.totalCount - r1.gitRefs.totalCount)
                 .map(r => r.url)
             if (repositoryURLs.length === 0) {
                 return null
@@ -119,23 +117,19 @@ const getActivationSteps = (authenticatedUser: GQL.IUser): ActivationStep[] => {
     const sources: (ActivationStep & { siteAdminOnly?: boolean })[] = [
         {
             id: 'ConnectedCodeHost',
-            title: 'Connect your code host',
+            title: 'Add repositories',
             detail: 'Configure Sourcegraph to talk to your code host and fetch a list of your repositories.',
-            link: { to: '/site-admin/external-services' },
-            siteAdminOnly: true,
-        },
-        {
-            id: 'EnabledRepository',
-            title: 'Enable repositories',
-            detail: 'Select which repositories Sourcegraph should pull and index from your code host(s).',
-            link: { to: '/site-admin/repositories' },
             siteAdminOnly: true,
         },
         {
             id: 'DidSearch',
             title: 'Search your code',
-            detail: 'Perform a search query on your code.',
-            link: { to: '/search' },
+            detail: (
+                <span>
+                    Head to the <a href="/search">homepage</a> and perform a search query on your code.{' '}
+                    <strong>Example:</strong> type 'lang:' and select a language
+                </span>
+            ),
         },
         {
             id: 'FoundReferences',
@@ -157,7 +151,10 @@ const getActivationSteps = (authenticatedUser: GQL.IUser): ActivationStep[] => {
             id: 'EnabledSharing',
             title: 'Configure SSO or share with teammates',
             detail: 'Configure a single-sign on (SSO) provider or have at least one other teammate sign up.',
-            link: { to: 'https://docs.sourcegraph.com/admin/auth', target: '_blank' },
+            onClick: () => {
+                window.open('https://docs.sourcegraph.com/admin/auth', '_blank', 'height=200,width=200')
+                window.open('/site-admin/configuration', '_self')
+            },
             siteAdminOnly: true,
         },
     ]
@@ -173,6 +170,7 @@ const getActivationSteps = (authenticatedUser: GQL.IUser): ActivationStep[] => {
 const recordUpdate = (update: Partial<ActivationCompletionStatus>): void => {
     if (update.FoundReferences) {
         logUserEvent(GQL.UserEvent.CODEINTELREFS)
+        logEvent('CodeIntelRefs')
     }
 }
 
@@ -188,7 +186,9 @@ interface WithActivationState {
  * Modifies the input component to return a component that includes the activation status in the
  * `activation` field of its props.
  */
-export const withActivation = <P extends ActivationProps>(Component: React.ComponentType<P>) =>
+export const withActivation = <P extends ActivationProps>(
+    Component: React.ComponentType<P>
+): React.ComponentType<WithActivationProps & Subtract<P, ActivationProps>> =>
     class WithActivation extends React.Component<
         WithActivationProps & Subtract<P, ActivationProps>,
         WithActivationState
@@ -211,10 +211,10 @@ export const withActivation = <P extends ActivationProps>(Component: React.Compo
                 map(props => props.authenticatedUser),
                 distinctUntilChanged()
             )
-            const serverCompletionStatus: Observable<ActivationCompletionStatus> = combineLatest(
+            const serverCompletionStatus: Observable<ActivationCompletionStatus> = combineLatest([
                 authenticatedUser,
-                this.refetches.pipe(startWith(undefined))
-            ).pipe(
+                this.refetches.pipe(startWith(undefined)),
+            ]).pipe(
                 switchMap(([authenticatedUser]) =>
                     authenticatedUser ? fetchActivationStatus(authenticatedUser.siteAdmin) : []
                 )
@@ -230,7 +230,7 @@ export const withActivation = <P extends ActivationProps>(Component: React.Compo
                 )
             )
             this.subscriptions.add(
-                combineLatest(serverCompletionStatus, localCompletionStatus)
+                combineLatest([serverCompletionStatus, localCompletionStatus])
                     .pipe(
                         map(([serverCompletionStatus, localCompletionStatus]) => ({
                             ...serverCompletionStatus,
@@ -257,7 +257,7 @@ export const withActivation = <P extends ActivationProps>(Component: React.Compo
             return undefined
         }
 
-        private refetchCompletionStatus = () => this.refetches.next()
+        private refetchCompletionStatus = (): void => this.refetches.next()
 
         private updateCompletionStatus = (update: Partial<ActivationCompletionStatus>): void =>
             this.updates.next(update)

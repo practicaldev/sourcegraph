@@ -10,6 +10,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary'
 import { HeroPage } from '../components/HeroPage'
 import { RouteDescriptor } from '../util/contributions'
 import { SiteAdminSidebar, SiteAdminSideBarGroups } from './SiteAdminSidebar'
+import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
 
 const NotFoundPage: React.ComponentType<{}> = () => (
     <HeroPage
@@ -29,7 +30,7 @@ export interface SiteAdminAreaRouteContext extends PlatformContextProps, Setting
     isLightTheme: boolean
 
     /** This property is only used by {@link SiteAdminOverviewPage}. */
-    overviewComponents: ReadonlyArray<React.ComponentType>
+    overviewComponents: readonly React.ComponentType[]
 }
 
 export interface SiteAdminAreaRoute extends RouteDescriptor<SiteAdminAreaRouteContext> {}
@@ -39,61 +40,62 @@ interface SiteAdminAreaProps
         PlatformContextProps,
         SettingsCascadeProps,
         ActivationProps {
-    routes: ReadonlyArray<SiteAdminAreaRoute>
+    routes: readonly SiteAdminAreaRoute[]
     sideBarGroups: SiteAdminSideBarGroups
-    overviewComponents: ReadonlyArray<React.ComponentType>
+    overviewComponents: readonly React.ComponentType[]
     authenticatedUser: GQL.IUser
     isLightTheme: boolean
+}
+
+const AuthenticatedSiteAdminArea: React.FunctionComponent<SiteAdminAreaProps> = props => {
+    // If not site admin, redirect to sign in.
+    if (!props.authenticatedUser.siteAdmin) {
+        return <NotSiteAdminPage />
+    }
+
+    const context: SiteAdminAreaRouteContext = {
+        authenticatedUser: props.authenticatedUser,
+        platformContext: props.platformContext,
+        settingsCascade: props.settingsCascade,
+        isLightTheme: props.isLightTheme,
+        activation: props.activation,
+        site: { __typename: 'Site' as const, id: window.context.siteGQLID },
+        overviewComponents: props.overviewComponents,
+    }
+
+    return (
+        <div className="site-admin-area d-flex container my-3">
+            <SiteAdminSidebar className="flex-0 mr-3" groups={props.sideBarGroups} />
+            <div className="flex-1">
+                <ErrorBoundary location={props.location}>
+                    <React.Suspense fallback={<LoadingSpinner className="icon-inline m-2" />}>
+                        <Switch>
+                            {props.routes.map(
+                                /* eslint-disable react/jsx-no-bind */
+                                ({ render, path, exact, condition = () => true }) =>
+                                    condition(context) && (
+                                        <Route
+                                            // see https://github.com/ReactTraining/react-router/issues/4578#issuecomment-334489490
+                                            key="hardcoded-key"
+                                            path={props.match.url + path}
+                                            exact={exact}
+                                            render={routeComponentProps =>
+                                                render({ ...context, ...routeComponentProps })
+                                            }
+                                        />
+                                    )
+                                /* eslint-enable react/jsx-no-bind */
+                            )}
+                            <Route component={NotFoundPage} />
+                        </Switch>
+                    </React.Suspense>
+                </ErrorBoundary>
+            </div>
+        </div>
+    )
 }
 
 /**
  * Renders a layout of a sidebar and a content area to display site admin information.
  */
-export const SiteAdminArea = withAuthenticatedUser(
-    class SiteAdminArea extends React.Component<SiteAdminAreaProps> {
-        public render(): JSX.Element | null {
-            // If not site admin, redirect to sign in.
-            if (!this.props.authenticatedUser.siteAdmin) {
-                return <NotSiteAdminPage />
-            }
-
-            const context: SiteAdminAreaRouteContext = {
-                authenticatedUser: this.props.authenticatedUser,
-                platformContext: this.props.platformContext,
-                settingsCascade: this.props.settingsCascade,
-                isLightTheme: this.props.isLightTheme,
-                activation: this.props.activation,
-                site: { __typename: 'Site' as 'Site', id: window.context.siteGQLID },
-                overviewComponents: this.props.overviewComponents,
-            }
-
-            return (
-                <div className="site-admin-area area">
-                    <SiteAdminSidebar className="area__sidebar" groups={this.props.sideBarGroups} />
-                    <div className="area__content">
-                        <ErrorBoundary location={this.props.location}>
-                            <Switch>
-                                {this.props.routes.map(
-                                    ({ render, path, exact, condition = () => true }) =>
-                                        condition(context) && (
-                                            <Route
-                                                // see https://github.com/ReactTraining/react-router/issues/4578#issuecomment-334489490
-                                                key="hardcoded-key"
-                                                path={this.props.match.url + path}
-                                                exact={exact}
-                                                // tslint:disable-next-line:jsx-no-lambda RouteProps.render is an exception
-                                                render={routeComponentProps =>
-                                                    render({ ...context, ...routeComponentProps })
-                                                }
-                                            />
-                                        )
-                                )}
-                                <Route component={NotFoundPage} />
-                            </Switch>
-                        </ErrorBoundary>
-                    </div>
-                </div>
-            )
-        }
-    }
-)
+export const SiteAdminArea = withAuthenticatedUser(AuthenticatedSiteAdminArea)

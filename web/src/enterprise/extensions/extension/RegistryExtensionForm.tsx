@@ -1,13 +1,14 @@
 import * as React from 'react'
 import * as GQL from '../../../../../shared/src/graphql/schema'
 import { ErrorLike, isErrorLike } from '../../../../../shared/src/util/errors'
-import { Select } from '../../../components/Select'
 import {
     EXTENSION_NAME_MAX_LENGTH,
     EXTENSION_NAME_VALID_PATTERN,
     publisherName,
     RegistryPublisher,
 } from '../../../extensions/extension/extension'
+import { ErrorAlert } from '../../../components/alerts'
+import * as H from 'history'
 
 export const RegistryPublisherFormGroup: React.FunctionComponent<{
     className?: string
@@ -20,14 +21,16 @@ export const RegistryPublisherFormGroup: React.FunctionComponent<{
 
     disabled?: boolean
     onChange?: React.FormEventHandler<HTMLSelectElement>
-}> = ({ className = '', value, publishersOrError, disabled, onChange }) => (
+    history: H.History
+}> = ({ className = '', value, publishersOrError, disabled, onChange, history }) => (
     <div className={`form-group ${className}`}>
         <label htmlFor="extension-registry-create-extension-page__publisher">Publisher</label>
         {isErrorLike(publishersOrError) ? (
-            <div className="alert alert-danger">{publishersOrError.message}</div>
+            <ErrorAlert error={publishersOrError} history={history} />
         ) : (
-            <Select
+            <select
                 id="extension-registry-create-extension-page__publisher"
+                className="form-control"
                 onChange={onChange}
                 required={true}
                 disabled={disabled || publishersOrError === 'loading'}
@@ -36,13 +39,13 @@ export const RegistryPublisherFormGroup: React.FunctionComponent<{
                 {publishersOrError === 'loading' ? (
                     <option disabled={true}>Loading...</option>
                 ) : (
-                    publishersOrError.map((p, i) => (
+                    publishersOrError.map(p => (
                         <option key={p.id} value={p.id}>
                             {publisherName(p)}
                         </option>
                     ))
                 )}
-            </Select>
+            </select>
         )}
         <small className="form-help text-muted">
             The owner of this extension. This can't be changed after creation.

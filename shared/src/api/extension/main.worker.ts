@@ -1,12 +1,13 @@
 import '../../polyfills'
 
-import * as MessageChannelAdapter from '@sourcegraph/comlink/messagechanneladapter'
+import * as MessageChannelAdapter from '@sourcegraph/comlink/dist/umd/string-channel.experimental'
 import { fromEvent } from 'rxjs'
 import { take } from 'rxjs/operators'
 import { EndpointPair, isEndpointPair } from '../../platform/context'
 import { startExtensionHost } from './extensionHost'
+import { hasProperty } from '../../util/types'
 
-export interface InitMessage {
+interface InitMessage {
     endpoints: {
         proxy: MessagePort
         expose: MessagePort
@@ -20,13 +21,13 @@ export interface InitMessage {
     wrapEndpoints: boolean
 }
 
-const isInitMessage = (value: any): value is InitMessage => value.endpoints && isEndpointPair(value.endpoints)
+const isInitMessage = (value: unknown): value is InitMessage =>
+    typeof value === 'object' && value !== null && hasProperty('endpoints')(value) && isEndpointPair(value.endpoints)
 
-const wrapMessagePort = (port: MessagePort) =>
+const wrapMessagePort = (port: MessagePort): MessagePort =>
     MessageChannelAdapter.wrap({
         send: data => port.postMessage(data),
-        addEventListener: (event, listener) => port.addEventListener(event, listener),
-        removeEventListener: (event, listener) => port.removeEventListener(event, listener),
+        addMessageListener: listener => port.addEventListener('message', event => listener(event.data)),
     })
 
 const wrapEndpoints = ({ proxy, expose }: InitMessage['endpoints']): EndpointPair => {
@@ -45,9 +46,7 @@ const wrapEndpoints = ({ proxy, expose }: InitMessage['endpoints']): EndpointPai
  */
 async function extensionHostMain(): Promise<void> {
     try {
-        const event = await fromEvent<MessageEvent>(self, 'message')
-            .pipe(take(1))
-            .toPromise()
+        const event = await fromEvent<MessageEvent>(self, 'message').pipe(take(1)).toPromise()
         if (!isInitMessage(event.data)) {
             throw new Error('First message event in extension host worker was not a well-formed InitMessage')
         }
@@ -60,5 +59,5 @@ async function extensionHostMain(): Promise<void> {
     }
 }
 
-// tslint:disable-next-line: no-floating-promises
+// eslint-disable-next-line @typescript-eslint/no-floating-promises
 extensionHostMain()

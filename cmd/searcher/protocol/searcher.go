@@ -2,8 +2,11 @@
 package protocol
 
 import (
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/gitserver"
+	"fmt"
+	"strings"
+
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/gitserver"
 )
 
 // Request represents a request to searcher
@@ -42,7 +45,7 @@ type Request struct {
 }
 
 // GitserverRepo returns the repository information necessary to perform gitserver requests.
-func (r Request) GitserverRepo() gitserver.Repo { return gitserver.Repo{Name: r.Repo, URL: r.URL} }
+func (r Request) GitserverRepo() gitserver.Repo { return gitserver.Repo{Name: r.Repo} }
 
 // PatternInfo describes a search request on a repo. Most of the fields
 // are based on PatternInfo used in vscode.
@@ -53,6 +56,9 @@ type PatternInfo struct {
 
 	// IsRegExp if true will treat the Pattern as a regular expression.
 	IsRegExp bool
+
+	// IsStructuralPat if true will treat the pattern as a Comby structural search pattern.
+	IsStructuralPat bool
 
 	// IsWordMatch if true will only match the pattern at word boundaries.
 	IsWordMatch bool
@@ -83,10 +89,6 @@ type PatternInfo struct {
 	// and IncludePatterns are case sensitive.
 	PathPatternsAreCaseSensitive bool
 
-	// IncludePattern, if specified, will be appended to IncludePatterns.
-	// Deprecated: Use IncludePatterns instead.
-	IncludePattern string
-
 	// FileMatchLimit limits the number of files with matches that are returned.
 	FileMatchLimit int
 
@@ -97,21 +99,60 @@ type PatternInfo struct {
 	// PatternMatchesPath is whether a file whose path matches Pattern (but whose contents don't) should be
 	// considered a match.
 	PatternMatchesPath bool
+
+	// Languages is the languages passed via the lang filters (e.g., "lang:c")
+	Languages []string
+
+	// CombyRule is a rule that constrains matching for structural search. It only applies when IsStructuralPat is true.
+	CombyRule string
 }
 
-// AllIncludePatterns returns all include patterns (including the deprecated
-// single p.IncludePattern).
-func (p PatternInfo) AllIncludePatterns() []string {
-	if p.IncludePattern == "" {
-		return p.IncludePatterns
+func (p *PatternInfo) String() string {
+	args := []string{fmt.Sprintf("%q", p.Pattern)}
+	if p.IsRegExp {
+		args = append(args, "re")
 	}
-	if len(p.IncludePatterns) == 0 {
-		return []string{p.IncludePattern}
+	if p.IsStructuralPat {
+		if p.CombyRule != "" {
+			args = append(args, fmt.Sprintf("comby:%s", p.CombyRule))
+		} else {
+			args = append(args, "comby")
+		}
 	}
-	all := make([]string, 1+len(p.IncludePatterns))
-	copy(all, p.IncludePatterns)
-	all[len(all)-1] = p.IncludePattern
-	return all
+	if p.IsWordMatch {
+		args = append(args, "word")
+	}
+	if p.IsCaseSensitive {
+		args = append(args, "case")
+	}
+	if !p.PatternMatchesContent {
+		args = append(args, "nocontent")
+	}
+	if !p.PatternMatchesPath {
+		args = append(args, "nopath")
+	}
+	if p.FileMatchLimit > 0 {
+		args = append(args, fmt.Sprintf("filematchlimit:%d", p.FileMatchLimit))
+	}
+	for _, lang := range p.Languages {
+		args = append(args, fmt.Sprintf("lang:%s", lang))
+	}
+
+	path := "glob"
+	if p.PathPatternsAreRegExps {
+		path = "f"
+	}
+	if p.PathPatternsAreCaseSensitive {
+		path = "F"
+	}
+	if p.ExcludePattern != "" {
+		args = append(args, fmt.Sprintf("-%s:%q", path, p.ExcludePattern))
+	}
+	for _, inc := range p.IncludePatterns {
+		args = append(args, fmt.Sprintf("%s:%q", path, inc))
+	}
+
+	return fmt.Sprintf("PatternInfo{%s}", strings.Join(args, ","))
 }
 
 // Response represents the response from a Search request.
@@ -129,6 +170,8 @@ type Response struct {
 type FileMatch struct {
 	Path        string
 	LineMatches []LineMatch
+	// MatchCount is the number of matches. Different from len(LineMatches), as multiple lines may correspond to one logical match.
+	MatchCount int
 
 	// LimitHit is true if LineMatches may not include all LineMatches.
 	LimitHit bool

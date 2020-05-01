@@ -3,16 +3,18 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
+	"sort"
 	"strconv"
 	"testing"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/auth/providers"
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/authz"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/extsvc"
-	"github.com/sourcegraph/sourcegraph/pkg/extsvc/gitlab"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc"
+	"github.com/sourcegraph/sourcegraph/internal/extsvc/gitlab"
 	"github.com/sourcegraph/sourcegraph/schema"
 	"golang.org/x/oauth2"
 )
@@ -53,6 +55,9 @@ type mockGitLab struct {
 
 	// madeGetProject records what GetProject calls have been made. It's a map from oauth token -> GetProjectOp -> count.
 	madeGetProject map[string]map[gitlab.GetProjectOp]int
+
+	// madeListProjects records what ListProjects calls have been made. It's a map from oauth token -> string (urlStr) -> count.
+	madeListProjects map[string]map[string]int
 
 	// madeListTree records what ListTree calls have been made. It's a map from oauth token -> ListTreeOp -> count.
 	madeListTree map[string]map[gitlab.ListTreeOp]int
@@ -109,16 +114,17 @@ func newMockGitLab(op mockGitLabOp) mockGitLab {
 		}
 	}
 	return mockGitLab{
-		t:              op.t,
-		projs:          projs,
-		users:          op.users,
-		privateGuest:   privateGuest,
-		privateRepo:    privateRepo,
-		oauthToks:      op.oauthToks,
-		sudoTok:        op.sudoTok,
-		madeGetProject: map[string]map[gitlab.GetProjectOp]int{},
-		madeListTree:   map[string]map[gitlab.ListTreeOp]int{},
-		madeUsers:      map[string]map[string]int{},
+		t:                op.t,
+		projs:            projs,
+		users:            op.users,
+		privateGuest:     privateGuest,
+		privateRepo:      privateRepo,
+		oauthToks:        op.oauthToks,
+		sudoTok:          op.sudoTok,
+		madeGetProject:   map[string]map[gitlab.GetProjectOp]int{},
+		madeListProjects: map[string]map[string]int{},
+		madeListTree:     map[string]map[gitlab.ListTreeOp]int{},
+		madeUsers:        map[string]map[string]int{},
 	}
 }
 
@@ -149,6 +155,59 @@ func (m *mockGitLab) GetProject(c *gitlab.Client, ctx context.Context, op gitlab
 	return nil, gitlab.ErrNotFound
 }
 
+func (m *mockGitLab) ListProjects(c *gitlab.Client, ctx context.Context, urlStr string) (projs []*gitlab.Project, nextPageURL *string, err error) {
+	if _, ok := m.madeListProjects[c.OAuthToken]; !ok {
+		m.madeListProjects[c.OAuthToken] = map[string]int{}
+	}
+	m.madeListProjects[c.OAuthToken][urlStr]++
+
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, nil, err
+	}
+	query := u.Query()
+	if query.Get("pagination") == "keyset" {
+		return nil, nil, errors.New("This mock does not support keyset pagination")
+	}
+	perPage, err := strconv.Atoi(query.Get("per_page"))
+	if err != nil {
+		return nil, nil, err
+	}
+	page := 1
+	if p := query.Get("page"); p != "" {
+		page, err = strconv.Atoi(p)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	acctID := m.getAcctID(c)
+	for _, proj := range m.projs {
+		if proj.Visibility == gitlab.Public || (proj.Visibility == gitlab.Internal && acctID != 0) {
+			projs = append(projs, proj)
+		}
+	}
+	for _, pid := range m.privateGuest[acctID] {
+		projs = append(projs, m.projs[pid])
+	}
+	for _, pid := range m.privateRepo[acctID] {
+		projs = append(projs, m.projs[pid])
+	}
+
+	sort.Sort(projSort(projs))
+	if (page-1)*perPage >= len(projs) {
+		return nil, nil, nil
+	}
+	if page*perPage < len(projs) {
+		nextURL, _ := url.Parse(urlStr)
+		q := nextURL.Query()
+		q.Set("page", strconv.Itoa(page+1))
+		nextURL.RawQuery = q.Encode()
+		nextURLStr := nextURL.String()
+		return projs[(page-1)*perPage : page*perPage], &nextURLStr, nil
+	}
+	return projs[(page-1)*perPage:], nil, nil
+}
 func (m *mockGitLab) ListTree(c *gitlab.Client, ctx context.Context, op gitlab.ListTreeOp) ([]*gitlab.Tree, error) {
 	if _, ok := m.madeListTree[c.OAuthToken]; !ok {
 		m.madeListTree[c.OAuthToken] = map[gitlab.ListTreeOp]int{}
@@ -256,9 +315,9 @@ func (m *mockGitLab) ListUsers(c *gitlab.Client, ctx context.Context, urlStr str
 		return nil, nil, err
 	}
 	p := page - 1
-	var (
-		pagedUsers []*gitlab.User
-	)
+
+	var pagedUsers []*gitlab.User
+
 	if perPage*p > len(matchingUsers)-1 {
 		pagedUsers = nil
 	} else if perPage*(p+1) > len(matchingUsers)-1 {
@@ -283,9 +342,11 @@ func (m mockCache) Get(key string) ([]byte, bool) {
 	v, ok := m[key]
 	return []byte(v), ok
 }
+
 func (m mockCache) Set(key string, b []byte) {
 	m[key] = string(b)
 }
+
 func (m mockCache) Delete(key string) {
 	delete(m, key)
 }
@@ -316,8 +377,8 @@ func (m mockAuthnProvider) Refresh(ctx context.Context) error {
 	panic("should not be called")
 }
 
-func acct(t *testing.T, userID int32, serviceType, serviceID, accountID, oauthTok string) *extsvc.ExternalAccount {
-	var data extsvc.ExternalAccountData
+func acct(t *testing.T, userID int32, serviceType, serviceID, accountID, oauthTok string) *extsvc.Account {
+	var data extsvc.AccountData
 
 	var authData *oauth2.Token
 	if oauthTok != "" {
@@ -335,21 +396,21 @@ func acct(t *testing.T, userID int32, serviceType, serviceID, accountID, oauthTo
 		}, authData)
 	}
 
-	return &extsvc.ExternalAccount{
+	return &extsvc.Account{
 		UserID: userID,
-		ExternalAccountSpec: extsvc.ExternalAccountSpec{
+		AccountSpec: extsvc.AccountSpec{
 			ServiceType: serviceType,
 			ServiceID:   serviceID,
 			AccountID:   accountID,
 		},
-		ExternalAccountData: data,
+		AccountData: data,
 	}
 }
 
-func repo(uri, serviceType, serviceID, id string) authz.Repo {
-	return authz.Repo{
-		RepoName: api.RepoName(uri),
-		ExternalRepoSpec: api.ExternalRepoSpec{
+func repo(uri, serviceType, serviceID, id string) *types.Repo {
+	return &types.Repo{
+		Name: api.RepoName(uri),
+		ExternalRepo: api.ExternalRepoSpec{
 			ID:          id,
 			ServiceType: serviceType,
 			ServiceID:   serviceID,
@@ -379,3 +440,10 @@ func getIntOrDefault(str string, def int) (int, error) {
 	}
 	return strconv.Atoi(str)
 }
+
+// projSort sorts Projects in order of ID
+type projSort []*gitlab.Project
+
+func (p projSort) Len() int           { return len(p) }
+func (p projSort) Less(i, j int) bool { return p[i].ID < p[j].ID }
+func (p projSort) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }

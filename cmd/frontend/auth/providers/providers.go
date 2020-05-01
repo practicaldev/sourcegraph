@@ -6,8 +6,8 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/inconshreveable/log15"
 	"github.com/sourcegraph/sourcegraph/schema"
-	log15 "gopkg.in/inconshreveable/log15.v2"
 )
 
 // A Provider represents a user authentication provider (which provides functionality related to
@@ -147,6 +147,15 @@ func Providers() []Provider {
 	return providers
 }
 
+func BuiltinAuthEnabled() bool {
+	for _, p := range Providers() {
+		if p.Config().Builtin != nil {
+			return true
+		}
+	}
+	return false
+}
+
 type sortProviders []Provider
 
 func (p sortProviders) Len() int {
@@ -166,6 +175,7 @@ func (p sortProviders) Less(i, j int) bool {
 	}
 	return p[i].ConfigID().ID < p[j].ConfigID().ID
 }
+
 func (p sortProviders) Swap(i, j int) {
 	p[i], p[j] = p[j], p[i]
 }

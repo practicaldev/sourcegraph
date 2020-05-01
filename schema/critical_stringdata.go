@@ -8,6 +8,7 @@ const CriticalSchemaJSON = `{
   "$id": "critical.schema.json#",
   "title": "Critical configuration",
   "description": "Critical configuration for a Sourcegraph site.",
+  "allowComments": true,
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -86,7 +87,7 @@ const CriticalSchemaJSON = `{
       "group": "Misc."
     },
     "licenseKey": {
-      "description": "The license key associated with a Sourcegraph product subscription, which is necessary to activate Sourcegraph Enterprise functionality. To obtain this value, contact Sourcegraph to purchase a subscription.",
+      "description": "The license key associated with a Sourcegraph product subscription, which is necessary to activate Sourcegraph Enterprise functionality. To obtain this value, contact Sourcegraph to purchase a subscription. To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.",
       "type": "string",
       "group": "Sourcegraph Enterprise license"
     },
@@ -117,7 +118,7 @@ const CriticalSchemaJSON = `{
       "default": [{ "type": "builtin", "allowSignup": true }]
     },
     "auth.public": {
-      "description": "Allows anonymous visitors full read access to repositories, code files, search, and other data (except site configuration).\n\nSECURITY WARNING: If you enable this, you must ensure that only authorized users can access the server (using firewall rules or an external proxy, for example).\n\nRequires usage of the builtin authentication provider.",
+      "description": "WARNING: This option has been removed as of 3.8.",
       "type": "boolean",
       "default": false,
       "group": "Authentication"
@@ -225,7 +226,7 @@ const CriticalSchemaJSON = `{
         },
         "displayName": { "$ref": "#/definitions/AuthProviderCommon/properties/displayName" },
         "serviceProviderIssuer": {
-          "description": "The name of this SAML Service Provider, which is used by the Identity Provider to identify this Service Provider. It defaults to https://sourcegraph.example.com/.auth/saml/metadata (where https://sourcegraph.example.com is replaced with this Sourcegraph instance's \"externalURL\"). It is only necessary to explicitly set the issuer if you are using multiple SAML authentication providers.",
+          "description": "The SAML Service Provider name, used to identify this Service Provider. This is required if the \"externalURL\" field is not set (as the SAML metadata endpoint is computed as \"<externalURL>.auth/saml/metadata\"), or when using multiple SAML authentication providers.",
           "type": "string"
         },
         "identityProviderMetadataURL": {
@@ -235,18 +236,18 @@ const CriticalSchemaJSON = `{
           "pattern": "^https?://"
         },
         "identityProviderMetadata": {
-          "description": "The SAML Identity Provider metadata XML contents (for static configuration of the SAML Service Provider). The value of this field should be an XML document whose root element is ` + "`" + `<EntityDescriptor>` + "`" + ` or ` + "`" + `<EntityDescriptors>` + "`" + `.",
+          "description": "The SAML Identity Provider metadata XML contents (for static configuration of the SAML Service Provider). The value of this field should be an XML document whose root element is ` + "`" + `<EntityDescriptor>` + "`" + ` or ` + "`" + `<EntityDescriptors>` + "`" + `. To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.",
           "type": "string"
         },
         "serviceProviderCertificate": {
-          "description": "The SAML Service Provider certificate in X.509 encoding (begins with \"-----BEGIN CERTIFICATE-----\"). This certificate is used by the Identity Provider to validate the Service Provider's AuthnRequests and LogoutRequests. It corresponds to the Service Provider's private key (` + "`" + `serviceProviderPrivateKey` + "`" + `).",
+          "description": "The SAML Service Provider certificate in X.509 encoding (begins with \"-----BEGIN CERTIFICATE-----\"). This certificate is used by the Identity Provider to validate the Service Provider's AuthnRequests and LogoutRequests. It corresponds to the Service Provider's private key (` + "`" + `serviceProviderPrivateKey` + "`" + `). To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.",
           "type": "string",
           "$comment": "The pattern matches either X.509 encoding or an env var.",
           "pattern": "^(-----BEGIN CERTIFICATE-----\n|\\$)",
           "minLength": 1
         },
         "serviceProviderPrivateKey": {
-          "description": "The SAML Service Provider private key in PKCS#8 encoding (begins with \"-----BEGIN PRIVATE KEY-----\"). This private key is used to sign AuthnRequests and LogoutRequests. It corresponds to the Service Provider's certificate (` + "`" + `serviceProviderCertificate` + "`" + `).",
+          "description": "The SAML Service Provider private key in PKCS#8 encoding (begins with \"-----BEGIN PRIVATE KEY-----\"). This private key is used to sign AuthnRequests and LogoutRequests. It corresponds to the Service Provider's certificate (` + "`" + `serviceProviderCertificate` + "`" + `). To escape the value into a JSON string, you may want to use a tool like https://json-escape-text.now.sh.",
           "type": "string",
           "$comment": "The pattern matches either PKCS#8 encoding or an env var.",
           "pattern": "^(-----BEGIN PRIVATE KEY-----\n|\\$)",

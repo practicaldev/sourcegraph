@@ -1,22 +1,45 @@
+import { Range, Selection } from '@sourcegraph/extension-api-classes'
 import * as clientType from '@sourcegraph/extension-api-types'
 import { from } from 'rxjs'
-import { first, take } from 'rxjs/operators'
-import { isDefined } from '../../util/types'
-import { Range } from '../extension/types/range'
-import { integrationTestContext } from './testHelpers'
+import { distinctUntilChanged, first, switchMap, take, toArray, filter } from 'rxjs/operators'
+import * as sourcegraph from 'sourcegraph'
+import { isDefined, isTaggedUnionMember } from '../../util/types'
+import { assertToJSON, integrationTestContext } from './testHelpers'
 
 describe('CodeEditor (integration)', () => {
+    describe('selection', () => {
+        test('observe changes', async () => {
+            const {
+                services: { viewer: viewerService },
+                extensionAPI,
+            } = await integrationTestContext()
+            const editor = viewerService.viewers.get('viewer#0')!
+            viewerService.setSelections(editor, [new Selection(1, 2, 3, 4)])
+            viewerService.setSelections(editor, [])
+
+            const values = await from(extensionAPI.app.windows[0].activeViewComponentChanges)
+                .pipe(
+                    switchMap(c => (c && c.type === 'CodeEditor' ? c.selectionsChanges : [])),
+                    distinctUntilChanged(),
+                    take(3),
+                    toArray()
+                )
+                .toPromise()
+            assertToJSON(
+                values.map(v => v.map(v => Selection.fromPlain(v).toPlain())),
+                [[], [new Selection(1, 2, 3, 4).toPlain()], []]
+            )
+        })
+    })
+
     describe('setDecorations', () => {
         test('adds decorations', async () => {
             const { services, extensionAPI } = await integrationTestContext()
             const dt = extensionAPI.app.createDecorationType()
 
             // Set some decorations and check they are present on the client.
-            const activeWindow = await from(extensionAPI.app.activeWindowChanges)
-                .pipe(first(isDefined))
-                .toPromise()
-            const codeEditor = activeWindow.visibleViewComponents[0]
-            codeEditor.setDecorations(dt, [
+            const editor = await getFirstCodeEditor(extensionAPI)
+            editor.setDecorations(dt, [
                 {
                     range: new Range(1, 2, 3, 4),
                     backgroundColor: 'red',
@@ -24,10 +47,7 @@ describe('CodeEditor (integration)', () => {
             ])
             await extensionAPI.internal.sync()
             expect(
-                await services.textDocumentDecoration
-                    .getDecorations({ uri: 'file:///f' })
-                    .pipe(take(1))
-                    .toPromise()
+                await services.textDocumentDecoration.getDecorations({ uri: 'file:///f' }).pipe(take(1)).toPromise()
             ).toEqual([
                 {
                     range: { start: { line: 1, character: 2 }, end: { line: 3, character: 4 } },
@@ -36,13 +56,10 @@ describe('CodeEditor (integration)', () => {
             ] as clientType.TextDocumentDecoration[])
 
             // Clear the decorations and ensure they are removed.
-            codeEditor.setDecorations(dt, [])
+            editor.setDecorations(dt, [])
             await extensionAPI.internal.sync()
             expect(
-                await services.textDocumentDecoration
-                    .getDecorations({ uri: 'file:///f' })
-                    .pipe(take(1))
-                    .toPromise()
+                await services.textDocumentDecoration.getDecorations({ uri: 'file:///f' }).pipe(take(1)).toPromise()
             ).toEqual(null)
         })
 
@@ -50,11 +67,8 @@ describe('CodeEditor (integration)', () => {
             const { services, extensionAPI } = await integrationTestContext()
             const [dt1, dt2] = [extensionAPI.app.createDecorationType(), extensionAPI.app.createDecorationType()]
 
-            const activeWindow = await from(extensionAPI.app.activeWindowChanges)
-                .pipe(first(isDefined))
-                .toPromise()
-            const codeEditor = activeWindow.visibleViewComponents[0]
-            codeEditor.setDecorations(dt1, [
+            const editor = await getFirstCodeEditor(extensionAPI)
+            editor.setDecorations(dt1, [
                 {
                     range: new Range(1, 2, 3, 4),
                     after: {
@@ -62,7 +76,7 @@ describe('CodeEditor (integration)', () => {
                     },
                 },
             ])
-            codeEditor.setDecorations(dt2, [
+            editor.setDecorations(dt2, [
                 {
                     range: new Range(1, 2, 3, 4),
                     after: {
@@ -72,10 +86,7 @@ describe('CodeEditor (integration)', () => {
             ])
             await extensionAPI.internal.sync()
             expect(
-                await services.textDocumentDecoration
-                    .getDecorations({ uri: 'file:///f' })
-                    .pipe(take(1))
-                    .toPromise()
+                await services.textDocumentDecoration.getDecorations({ uri: 'file:///f' }).pipe(take(1)).toPromise()
             ).toEqual([
                 {
                     range: { start: { line: 1, character: 2 }, end: { line: 3, character: 4 } },
@@ -92,7 +103,7 @@ describe('CodeEditor (integration)', () => {
             ] as clientType.TextDocumentDecoration[])
 
             // Change decorations only for dt1, and check that merged decorations are coherent
-            codeEditor.setDecorations(dt1, [
+            editor.setDecorations(dt1, [
                 {
                     range: new Range(1, 2, 3, 4),
                     after: {
@@ -102,10 +113,7 @@ describe('CodeEditor (integration)', () => {
             ])
             await extensionAPI.internal.sync()
             expect(
-                await services.textDocumentDecoration
-                    .getDecorations({ uri: 'file:///f' })
-                    .pipe(take(1))
-                    .toPromise()
+                await services.textDocumentDecoration.getDecorations({ uri: 'file:///f' }).pipe(take(1)).toPromise()
             ).toEqual([
                 {
                     range: { start: { line: 1, character: 2 }, end: { line: 3, character: 4 } },
@@ -122,13 +130,10 @@ describe('CodeEditor (integration)', () => {
             ] as clientType.TextDocumentDecoration[])
 
             // remove decorations for dt2, and verify that decorations for dt1 are still present
-            codeEditor.setDecorations(dt2, [])
+            editor.setDecorations(dt2, [])
             await extensionAPI.internal.sync()
             expect(
-                await services.textDocumentDecoration
-                    .getDecorations({ uri: 'file:///f' })
-                    .pipe(take(1))
-                    .toPromise()
+                await services.textDocumentDecoration.getDecorations({ uri: 'file:///f' }).pipe(take(1)).toPromise()
             ).toEqual([
                 {
                     range: { start: { line: 1, character: 2 }, end: { line: 3, character: 4 } },
@@ -144,11 +149,8 @@ describe('CodeEditor (integration)', () => {
             const dt = extensionAPI.app.createDecorationType()
 
             // Set some decorations and check they are present on the client.
-            const activeWindow = await from(extensionAPI.app.activeWindowChanges)
-                .pipe(first(isDefined))
-                .toPromise()
-            const codeEditor = activeWindow.visibleViewComponents[0]
-            codeEditor.setDecorations(dt, [
+            const editor = await getFirstCodeEditor(extensionAPI)
+            editor.setDecorations(dt, [
                 {
                     range: new Range(1, 2, 3, 4),
                     backgroundColor: 'red',
@@ -157,7 +159,7 @@ describe('CodeEditor (integration)', () => {
 
             // This call to setDecorations does not supply a type, mimicking extensions
             // that may have been developed against an older version of the API
-            codeEditor.setDecorations(null as any, [
+            editor.setDecorations(null as any, [
                 {
                     range: new Range(1, 2, 3, 4),
                     after: {
@@ -169,10 +171,7 @@ describe('CodeEditor (integration)', () => {
             // Both sets of decorations should be displayed
             await extensionAPI.internal.sync()
             expect(
-                await services.textDocumentDecoration
-                    .getDecorations({ uri: 'file:///f' })
-                    .pipe(take(1))
-                    .toPromise()
+                await services.textDocumentDecoration.getDecorations({ uri: 'file:///f' }).pipe(take(1)).toPromise()
             ).toEqual([
                 {
                     range: { start: { line: 1, character: 2 }, end: { line: 3, character: 4 } },
@@ -188,3 +187,15 @@ describe('CodeEditor (integration)', () => {
         })
     })
 })
+
+async function getFirstCodeEditor(extensionAPI: typeof sourcegraph): Promise<sourcegraph.CodeEditor> {
+    return from(extensionAPI.app.activeWindowChanges)
+        .pipe(
+            first(isDefined),
+            switchMap(win => win.activeViewComponentChanges),
+            filter(isDefined),
+            filter(isTaggedUnionMember('type', 'CodeEditor' as const)),
+            take(1)
+        )
+        .toPromise()
+}

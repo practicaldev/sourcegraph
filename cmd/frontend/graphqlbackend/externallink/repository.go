@@ -7,18 +7,18 @@ import (
 	"net/url"
 	"strings"
 
-	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/inconshreveable/log15"
 	"github.com/opentracing/opentracing-go/ext"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/backend"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/db"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/types"
-	"github.com/sourcegraph/sourcegraph/pkg/api"
-	"github.com/sourcegraph/sourcegraph/pkg/errcode"
-	"github.com/sourcegraph/sourcegraph/pkg/repoupdater"
-	"github.com/sourcegraph/sourcegraph/pkg/repoupdater/protocol"
-	"github.com/sourcegraph/sourcegraph/pkg/vcs/git"
-	log15 "gopkg.in/inconshreveable/log15.v2"
+	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/errcode"
+	"github.com/sourcegraph/sourcegraph/internal/repoupdater"
+	"github.com/sourcegraph/sourcegraph/internal/repoupdater/protocol"
+	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
+	"github.com/sourcegraph/sourcegraph/internal/vcs/git"
 )
 
 // Repository returns the external links for a repository.
@@ -104,12 +104,10 @@ func Commit(ctx context.Context, repo *types.Repo, commitID api.CommitID) (links
 // It logs errors to the trace but does not return errors, because external links are not worth
 // failing any request for.
 func linksForRepository(ctx context.Context, repo *types.Repo) (phabRepo *types.PhabricatorRepo, link *protocol.RepoLinks, serviceType string) {
-	span, ctx := opentracing.StartSpanFromContext(ctx, "externallink.linksForRepository")
+	span, ctx := ot.StartSpanFromContext(ctx, "externallink.linksForRepository")
 	defer span.Finish()
 	span.SetTag("Repo", repo.Name)
-	if repo.ExternalRepo != nil {
-		span.SetTag("ExternalRepo", repo.ExternalRepo)
-	}
+	span.SetTag("ExternalRepo", repo.ExternalRepo)
 
 	var err error
 	phabRepo, err = db.Phabricator.GetByName(ctx, repo.Name)
@@ -120,8 +118,7 @@ func linksForRepository(ctx context.Context, repo *types.Repo) (phabRepo *types.
 
 	// Look up repo links in the repo-updater. This supplies links from code host APIs.
 	info, err := repoupdater.DefaultClient.RepoLookup(ctx, protocol.RepoLookupArgs{
-		Repo:         repo.Name,
-		ExternalRepo: repo.ExternalRepo,
+		Repo: repo.Name,
 	})
 	if err != nil {
 		ext.Error.Set(span, true)
@@ -131,9 +128,7 @@ func linksForRepository(ctx context.Context, repo *types.Repo) (phabRepo *types.
 	}
 	if info != nil && info.Repo != nil {
 		link = info.Repo.Links
-		if info.Repo.ExternalRepo != nil {
-			serviceType = info.Repo.ExternalRepo.ServiceType
-		}
+		serviceType = info.Repo.ExternalRepo.ServiceType
 	}
 
 	return phabRepo, link, serviceType

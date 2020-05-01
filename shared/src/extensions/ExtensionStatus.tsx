@@ -1,12 +1,12 @@
 import { LoadingSpinner } from '@sourcegraph/react-loading-spinner'
-import * as H from 'history'
+import MenuUpIcon from 'mdi-react/MenuUpIcon'
 import * as React from 'react'
+import { UncontrolledPopover } from 'reactstrap'
 import { Subject, Subscription } from 'rxjs'
 import { catchError, distinctUntilChanged, map, switchMap } from 'rxjs/operators'
 import { ExecutableExtension } from '../api/client/services/extensionsService'
 import { Link } from '../components/Link'
-import { PopoverButton } from '../components/PopoverButton'
-import { ExtensionsControllerProps } from '../extensions/controller'
+import { ExtensionsControllerProps } from './controller'
 import { PlatformContextProps } from '../platform/context'
 import { asError, ErrorLike, isErrorLike } from '../util/errors'
 
@@ -21,7 +21,7 @@ interface State {
     sideloadedExtensionURL?: string | null
 }
 
-export class ExtensionStatus extends React.PureComponent<Props, State> {
+class ExtensionStatus extends React.PureComponent<Props, State> {
     public state: State = {}
 
     private componentUpdates = new Subject<Props>()
@@ -39,7 +39,10 @@ export class ExtensionStatus extends React.PureComponent<Props, State> {
                     catchError(err => [asError(err)]),
                     map(extensionsOrError => ({ extensionsOrError }))
                 )
-                .subscribe(stateUpdate => this.setState(stateUpdate), err => console.error(err))
+                .subscribe(
+                    stateUpdate => this.setState(stateUpdate),
+                    err => console.error(err)
+                )
         )
 
         const platformContext = this.componentUpdates.pipe(
@@ -49,8 +52,8 @@ export class ExtensionStatus extends React.PureComponent<Props, State> {
 
         this.subscriptions.add(
             platformContext
-                .pipe(switchMap(({ sideloadedExtensionURL: sideloadedExtensionURL }) => sideloadedExtensionURL))
-                .subscribe(sideloadedExtensionURL => this.setState({ ...this.state, sideloadedExtensionURL }))
+                .pipe(switchMap(({ sideloadedExtensionURL }) => sideloadedExtensionURL))
+                .subscribe(sideloadedExtensionURL => this.setState({ sideloadedExtensionURL }))
         )
 
         this.componentUpdates.next(this.props)
@@ -100,12 +103,17 @@ export class ExtensionStatus extends React.PureComponent<Props, State> {
                             </p>
                             <div>
                                 <button
+                                    type="button"
                                     className="btn btn-sm btn-primary mr-1"
                                     onClick={this.setSideloadedExtensionURL}
                                 >
                                     Change
                                 </button>
-                                <button className="btn btn-sm btn-danger" onClick={this.clearSideloadedExtensionURL}>
+                                <button
+                                    type="button"
+                                    className="btn btn-sm btn-danger"
+                                    onClick={this.clearSideloadedExtensionURL}
+                                >
                                     Clear
                                 </button>
                             </div>
@@ -116,7 +124,11 @@ export class ExtensionStatus extends React.PureComponent<Props, State> {
                                 <span>No sideloaded extension</span>
                             </p>
                             <div>
-                                <button className="btn btn-sm btn-primary" onClick={this.setSideloadedExtensionURL}>
+                                <button
+                                    type="button"
+                                    className="btn btn-sm btn-primary"
+                                    onClick={this.setSideloadedExtensionURL}
+                                >
                                     Load extension
                                 </button>
                             </div>
@@ -127,7 +139,7 @@ export class ExtensionStatus extends React.PureComponent<Props, State> {
         )
     }
 
-    private setSideloadedExtensionURL = () => {
+    private setSideloadedExtensionURL = (): void => {
         const url = window.prompt(
             'Parcel dev server URL:',
             this.state.sideloadedExtensionURL || 'http://localhost:1234'
@@ -135,22 +147,23 @@ export class ExtensionStatus extends React.PureComponent<Props, State> {
         this.props.platformContext.sideloadedExtensionURL.next(url)
     }
 
-    private clearSideloadedExtensionURL = () => {
+    private clearSideloadedExtensionURL = (): void => {
         this.props.platformContext.sideloadedExtensionURL.next(null)
     }
 }
 
 /** A button that toggles the visibility of the ExtensionStatus element in a popover. */
-export class ExtensionStatusPopover extends React.PureComponent<Props & { location: H.Location }> {
+export class ExtensionStatusPopover extends React.PureComponent<Props> {
     public render(): JSX.Element | null {
         return (
-            <PopoverButton
-                placement="auto-end"
-                hideOnChange={this.props.location}
-                popoverElement={<ExtensionStatus {...this.props} />}
-            >
-                <span className="text-muted">Ext</span>
-            </PopoverButton>
+            <>
+                <button type="button" id="extension-status-popover" className="btn btn-link text-decoration-none px-2">
+                    <span className="text-muted">Ext</span> <MenuUpIcon className="icon-inline" />
+                </button>
+                <UncontrolledPopover placement="auto-end" target="extension-status-popover">
+                    <ExtensionStatus {...this.props} />
+                </UncontrolledPopover>
+            </>
         )
     }
 }
